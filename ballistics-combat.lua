@@ -281,6 +281,9 @@ local vmSkin = nil
 local abPickAt, abTgt = 0, nil
 local claimedSeeds = {}
 local lastShotFrom = nil
+local lastVolleyAt = 0
+local lastVolleySpeed = 900
+local lastVolleyDrag = 0
 local lastHitSoundAt = 0
 local dirScratch = {}
 local dirCount = 4
@@ -1231,8 +1234,24 @@ function F.ballistic_dir(origin, target, toolOrName, muzzleIdx, bulletIdx, noQua
         return delta.Magnitude > 0 and delta.Unit or Cam.CFrame.LookVector
     end
     local speed, drag = F.weapon_profile(toolOrName, muzzleIdx, bulletIdx)
+    local g = Workspace.Gravity
     local t = F.flight_time(dist, speed, drag)
-    local drop = 0.5 * Workspace.Gravity * t * t
+    if Trajectory and type(Trajectory.new) == "function" and type(Trajectory.GetTimeForDistance) == "function" then
+        local okT, traj = pcall(Trajectory.new, {
+            Origin = origin,
+            Direction = delta,
+            MuzzleSpeed = speed,
+            K = drag,
+            Gravity = g,
+        })
+        if okT and traj then
+            local okD, tt = pcall(Trajectory.GetTimeForDistance, traj, dist)
+            if okD and type(tt) == "number" then
+                t = tt
+            end
+        end
+    end
+    local drop = 0.5 * g * t * t
     local aim = target + V3(0, drop, 0)
     local dir = (aim - origin)
     if dir.Magnitude < 1e-4 then
@@ -3601,6 +3620,33 @@ local function install_hooks()
                         end
                         F.hit_fx(from, pos)
                     end
+                    if CFG.InstantHit then
+                        local dist = 0
+                        if typeof(lastShotFrom) == "Vector3" and typeof(pos) == "Vector3" then
+                            dist = (pos - lastShotFrom).Magnitude
+                        elseif typeof(pos) == "Vector3" then
+                            dist = pos.Magnitude
+                        end
+                        local tReal = F.flight_time(dist, lastVolleySpeed, lastVolleyDrag)
+                        local elapsed = clock() - lastVolleyAt
+                        local wait = tReal - elapsed
+                        if wait > 1.25 then
+                            wait = 1.25
+                        end
+                        if wait > 0.03 then
+                            task.delay(wait, function()
+                                if type(impact) ~= "table" then
+                                    return
+                                end
+                                local live = impact.Instance
+                                if live and live.Parent and live:IsA("BasePart") then
+                                    impact.Position = live.Position
+                                end
+                                origSendClaim(seed, impact)
+                            end)
+                            return
+                        end
+                    end
                 end
             end
             return origSendClaim(seed, impact)
@@ -3725,6 +3771,8 @@ local function install_hooks()
             end
         end
         lastShotFrom = fireOrigin
+        lastVolleyAt = clock()
+        lastVolleySpeed, lastVolleyDrag = F.weapon_profile(tool, muzzleIdx, bulletIdx)
         local results = origFireVolley(tool, muzzleIdx, bulletIdx, fireOrigin, dirs, opts)
         if type(results) == "table" then
             local mul = 1
