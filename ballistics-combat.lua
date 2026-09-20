@@ -99,7 +99,6 @@ local CFG = {
     AutoHeal = false,
     AutoHealRadius = 7,
     AutoHealSelf = true,
-    AutoRecon = false,
 
     MultiPoint = true,
     SpoofOrigin = true,
@@ -291,10 +290,7 @@ local lastVolleyDrag = 0
 local lastSupport = {
     at = 0,
     heal = nil,
-    reconUntil = 0,
-    reconHooked = false,
     medicRE = nil,
-    binRE = nil,
 }
 local lastHitSoundAt = 0
 local dirScratch = {}
@@ -637,27 +633,12 @@ function F.held_named(needle)
 end
 
 function F.ensure_support_remotes()
-    if lastSupport.medicRE and lastSupport.binRE then
+    if lastSupport.medicRE then
         return
     end
     local rem = ReplicatedStorage:FindFirstChild("Remotes")
     if rem then
-        if not lastSupport.medicRE then
-            lastSupport.medicRE = rem:FindFirstChild("MedicBag")
-        end
-        if not lastSupport.binRE then
-            lastSupport.binRE = rem:FindFirstChild("Binoculars")
-        end
-    end
-    if lastSupport.binRE and not lastSupport.reconHooked then
-        lastSupport.reconHooked = true
-        lastSupport.binRE.OnClientEvent:Connect(function(sec)
-            if type(sec) == "number" and sec > 0 then
-                lastSupport.reconUntil = clock() + sec
-            elseif sec == 0 or sec == false or sec == nil then
-                lastSupport.reconUntil = 0
-            end
-        end)
+        lastSupport.medicRE = rem:FindFirstChild("MedicBag")
     end
 end
 
@@ -709,226 +690,6 @@ function F.stop_heal()
     end
 end
 
-function F.recon_cd_ready(now)
-    if now < (lastSupport.reconUntil or 0) then
-        return false
-    end
-    local pg = LP:FindFirstChild("PlayerGui")
-    local gui = pg and pg:FindFirstChild("BinocularsGui")
-    local cd = gui and gui:FindFirstChild("CooldownText")
-    if cd and cd.Visible == true then
-        local t = cd.Text
-        if type(t) == "string" then
-            local sec = tonumber(string.match(t, "(%d+)"))
-            if sec and sec > 0 then
-                return false
-            end
-        end
-    end
-    return true
-end
-
-function F.recon_scan_update()
-    if lastSupport.reconUpdate then
-        return
-    end
-    if type(getconnections) ~= "function" then
-        return
-    end
-    local ok, conns = pcall(getconnections, RunService.RenderStepped)
-    if not ok or type(conns) ~= "table" then
-        return
-    end
-    for i = 1, #conns do
-        local c = conns[i]
-        local fn
-        local okF, f1 = pcall(function()
-            return c.Function
-        end)
-        if okF and type(f1) == "function" then
-            fn = f1
-        else
-            local ok2, f2 = pcall(function()
-                return c.ForeignFunction
-            end)
-            if ok2 and type(f2) == "function" then
-                fn = f2
-            end
-        end
-        if type(fn) == "function" then
-            local spot = false
-            for k = 1, 48 do
-                local okC, cst = pcall(debug.getconstant, fn, k)
-                if not okC then
-                    break
-                end
-                if cst == "Spotting" then
-                    spot = true
-                    break
-                end
-            end
-            if spot then
-                lastSupport.reconUpdate = fn
-                for ui = 1, 24 do
-                    local okA, a = pcall(debug.getupvalue, fn, ui)
-                    local okB, b = pcall(debug.getupvalue, fn, ui + 1)
-                    if okA and okB and type(a) == "boolean" and typeof(b) == "Instance" and b.Name == "ActionBar" then
-                        lastSupport.scoutUv = ui
-                        break
-                    end
-                end
-                return
-            end
-        end
-    end
-end
-
-function F.force_scout()
-    local inputs = ReplicatedStorage:FindFirstChild("Inputs")
-    local ctx = inputs and inputs:FindFirstChild("BinocularsContext")
-    if ctx then
-        ctx.Enabled = true
-        local scout = ctx:FindFirstChild("Scout")
-        if scout then
-            local okP, pressed = pcall(function()
-                return scout.Pressed
-            end)
-            if okP and typeof(pressed) == "RBXScriptSignal" then
-                if type(firesignal) == "function" then
-                    firesignal(pressed)
-                    lastSupport.scoutSignal = true
-                elseif type(getconnections) == "function" then
-                    local okC, conns = pcall(getconnections, pressed)
-                    if okC and type(conns) == "table" then
-                        for i = 1, #conns do
-                            local c = conns[i]
-                            if c and c.Fire then
-                                c:Fire()
-                                lastSupport.scoutSignal = true
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-    if lastSupport.scoutSignal then
-        return true
-    end
-    if type(lastSupport.scoutUv) == "number" and type(lastSupport.reconUpdate) == "function" then
-        debug.setupvalue(lastSupport.reconUpdate, lastSupport.scoutUv, true)
-        return true
-    end
-    return false
-end
-
-function F.bins_zoomed()
-    local pg = LP:FindFirstChild("PlayerGui")
-    local gui = pg and pg:FindFirstChild("BinocularsGui")
-    return gui ~= nil and gui.Enabled == true
-end
-
-function F.recon_is_command()
-    local ct = F.class_type()
-    return type(ct) == "string" and string.lower(ct) == "command"
-end
-
-function F.recon_aim()
-    local center = lastSupport.spotPos
-    if not (CFG.AutoRecon and center and Cam) then
-        return
-    end
-    local origin = Cam.CFrame.Position
-    if (center - origin).Magnitude < 0.05 then
-        return
-    end
-    Cam.CFrame = CFrame.lookAt(origin, center)
-end
-
-function F.recon_cluster()
-    if not Cam then
-        return
-    end
-    F.prep_frame(false)
-    local origin = Cam.CFrame.Position
-    local vs = Cam.ViewportSize
-    local aspect = vs.X / math.max(vs.Y, 1)
-    local fov = Cam.FieldOfView
-    if type(fov) ~= "number" or fov < 4 then
-        fov = 12
-    end
-    local halfV = math.rad(fov) * 0.5
-    local halfH = math.atan(math.tan(halfV) * aspect)
-    local cone = math.cos(math.min(halfH, halfV) * 0.92)
-    local slots = lastSupport.reconPts
-    if not slots then
-        slots = {}
-        lastSupport.reconPts = slots
-    end
-    local n = 0
-    for ri = 1, rosterN do
-        if n >= 12 then
-            break
-        end
-        local pl = roster[ri]
-        if F.enemy(pl) then
-            local r = F.char_ref(pl)
-            local bone = r.head or r.hrp
-            local char = r.char
-            if bone and char then
-                local pos = bone.Position
-                if F.cached_visible(pl, origin, pos) then
-                    n += 1
-                    local slot = slots[n]
-                    if not slot then
-                        slot = {}
-                        slots[n] = slot
-                    end
-                    slot.pos = pos
-                    slot.dir = (pos - origin).Unit
-                end
-            end
-        end
-    end
-    if n <= 0 then
-        return
-    end
-    local bestI, bestC = 1, 0
-    for i = 1, n do
-        local c = 0
-        local d0 = slots[i].dir
-        for j = 1, n do
-            if d0:Dot(slots[j].dir) >= cone then
-                c += 1
-            end
-        end
-        if c > bestC then
-            bestC = c
-            bestI = i
-        end
-    end
-    local accX, accY, accZ, k = 0, 0, 0, 0
-    local d0 = slots[bestI].dir
-    for j = 1, n do
-        if d0:Dot(slots[j].dir) >= cone then
-            local p = slots[j].pos
-            accX += p.X
-            accY += p.Y
-            accZ += p.Z
-            k += 1
-        end
-    end
-    if k <= 0 then
-        return
-    end
-    local center = Vector3.new(accX / k, accY / k, accZ / k)
-    local dir = center - origin
-    if dir.Magnitude < 0.05 then
-        return
-    end
-    return dir.Unit, center, k
-end
-
 function F.start_heal(target, now)
     if lastSupport.heal ~= target then
         if lastSupport.heal then
@@ -954,34 +715,6 @@ end
 function F.tick_support()
     local now = clock()
     F.ensure_support_remotes()
-    if CFG.AutoRecon then
-        local cam = Workspace.CurrentCamera
-        if cam then
-            Cam = cam
-        end
-        if not lastSupport.reconUpdate and now >= (lastSupport.reconScan or 0) then
-            lastSupport.reconScan = now + 1
-            F.recon_scan_update()
-        end
-        local driven = F.force_scout()
-        if now - (lastSupport.clusterAt or 0) >= 0.3 then
-            lastSupport.clusterAt = now
-            local dir, center = F.recon_cluster()
-            if dir and center then
-                lastSupport.spotPos = center
-                lastSupport.spotLook = dir
-                F.recon_aim()
-            end
-        elseif lastSupport.spotPos then
-            F.recon_aim()
-        end
-        if not driven and lastSupport.binRE and Cam and F.recon_cd_ready(now) then
-            lastSupport.binRE:FireServer(F.recon_is_command() and "Designate" or "Spotting", Cam.CFrame.LookVector)
-            lastSupport.reconUntil = now + 2
-        end
-    else
-        lastSupport.spotPos = nil
-    end
     if now - lastSupport.at < 0.3 then
         return
     end
@@ -3841,19 +3574,6 @@ function F.paint_overlay()
         local tScreen = cam:WorldToViewportPoint(saTgt.pos)
         if tScreen.Z > 0 then
             F.draw_reticle(tScreen.X, tScreen.Y, F.tier_color(saTgt.tier), now)
-        elseif not useDI then
-            for i = 1, #reticleLines do
-                reticleLines[i].Visible = false
-            end
-        end
-    elseif CFG.AutoRecon and lastSupport.spotPos then
-        F.recon_aim()
-        local tScreen = cam:WorldToViewportPoint(lastSupport.spotPos)
-        if tScreen.Z > 0 then
-            F.draw_reticle(tScreen.X, tScreen.Y, COL.TIER2, now)
-            if useDI then
-                F.paint_world_line(cam.CFrame.Position, lastSupport.spotPos, COL.TIER2, 1.6, 0.4)
-            end
         elseif not useDI then
             for i = 1, #reticleLines do
                 reticleLines[i].Visible = false
@@ -7952,14 +7672,6 @@ function F.buildUI(ctx)
             CFG.AutoHealRadius = v
         end,
     })
-
-    local reconSec = Misc:Section({ Side = "Right" })
-    reconSec:Header({ Name = "Auto Recon" })
-    boolToggle(reconSec, "Enabled", "CW_AutoRecon", function()
-        return CFG.AutoRecon
-    end, function(v)
-        CFG.AutoRecon = v
-    end, "Spots while binoculars are equipped. Looks at a visible cluster if there is one.")
 
     local dbg = Misc:Section({ Side = "Left" })
     dbg:Header({ Name = "Staff Detect" })
