@@ -80,14 +80,15 @@ local CFG = {
     SilentAimMaxDist = 2000,
     AimBone = "Head",
     IgnoreTeammates = true,
-    HitChance = 100,
+    HitChance = 70,
+    HeadChance = 50,
     LegitAim = true,
     LegitSpread = 0.35,
     LegitBoneJitter = 0.32,
 
     ForceHit = false,
     InstantHit = true,
-    InstantHitMul = 2.2,
+    InstantHitMul = 1.3,
     SmartInstant = true,
     ForceHitDelay = 0,
     SmartInstantRefDist = 400,
@@ -441,6 +442,53 @@ function F.bone_of(char, name)
     return char:FindFirstChild(name) or char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
 end
 
+function F.ref_bone(player, name)
+    local r = player and charRefs[player]
+    local char = r and r.char or (player and player.Character)
+    local bone
+    if r then
+        if name == "Head" then
+            bone = r.head or r.hrp
+        elseif name == "Torso" then
+            bone = r.torso or r.hrp
+        else
+            bone = r.hrp or r.head
+        end
+    end
+    if not (bone and bone.Parent) then
+        bone = F.bone_of(char, name)
+    end
+    return bone, char
+end
+
+function F.part_name_for_shot()
+    local mode = CFG.AimBone or "Head"
+    if mode == "Torso" or mode == "HumanoidRootPart" then
+        return mode
+    end
+    if mode == "Random" then
+        if math.random() < 0.5 then
+            return "Head"
+        end
+        return "Torso"
+    end
+    local hc = CFG.HeadChance
+    if type(hc) ~= "number" then
+        hc = 50
+    end
+    hc = clamp(hc, 0, 100)
+    if hc >= 100 then
+        return "Head"
+    end
+    if hc <= 0 then
+        return "Torso"
+    end
+    if math.random() * 100 < hc then
+        return "Head"
+    end
+    return "Torso"
+end
+
 local LIMB_HP = { "Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg" }
 
 function F.limb_hp_frac(char, o)
@@ -735,15 +783,16 @@ end
 function F.hit_rolls()
     local ch = CFG.HitChance
     if type(ch) ~= "number" then
-        ch = 80
+        ch = 70
     end
+    ch = clamp(ch, 0, 100)
     if ch >= 100 then
         return true
     end
     if ch <= 0 then
         return false
     end
-    return rnd() * 100 <= ch
+    return math.random() * 100 < ch
 end
 
 function F.part_aim_point(part, pos)
@@ -1305,6 +1354,26 @@ function F.pick_silent_target(origin, maxDist, needVis, fovDeg, boneName, allowM
             if F.cached_visible(c.player, origin, c.pos) then
                 cand = c
                 break
+            end
+        end
+        if not cand then
+            local altName
+            if boneName == "Head" then
+                altName = "Torso"
+            elseif boneName == "Torso" then
+                altName = "Head"
+            end
+            if altName then
+                for i = 1, visLimit do
+                    local c = candPool[i]
+                    local alt = F.ref_bone(c.player, altName)
+                    if alt and F.cached_visible(c.player, origin, alt.Position) then
+                        c.bone = alt
+                        c.pos = alt.Position
+                        cand = c
+                        break
+                    end
+                end
             end
         end
     else
@@ -3411,18 +3480,8 @@ local function install_hooks()
         local isTurret = type(tool) == "string"
         if rolled and (CFG.SilentAim or F.force_hit_on()) and (not isTurret or CFG.TurretSA) and type(dirs) == "table" and typeof(origin) == "Vector3" then
             F.prep_frame(true)
-            local src = saTgt
-            if src and src.player and src.player ~= LP then
-                local other = src.player
-                if LP.Team and other.Team and LP.Team == other.Team then
-                    src = nil
-                end
-            else
-                src = nil
-            end
-            if not src then
-                src = F.pick_silent_target(F.shot_origin(origin), CFG.SilentAimMaxDist, F.need_los())
-            end
+            local prefer = F.part_name_for_shot()
+            local src = F.pick_silent_target(F.shot_origin(origin), CFG.SilentAimMaxDist, F.need_los(), nil, prefer, true)
             if src then
                 saFireTgt.player = src.player
                 saFireTgt.pos = src.pos
@@ -3511,10 +3570,10 @@ local function install_hooks()
         if type(results) == "table" then
             local mul = 1
             if CFG.InstantHit then
-                mul = CFG.InstantHitMul or 2.2
+                mul = CFG.InstantHitMul or 1.3
             end
             if CFG.ForceHit then
-                local fm = CFG.InstantHitMul or 2.2
+                local fm = CFG.InstantHitMul or 1.3
                 if fm > mul then
                     mul = fm
                 end
@@ -5552,13 +5611,25 @@ local function buildUI(ctx)
         CFG.TurretSA = v
     end)
     sa:Dropdown({
-        Name = "Aim Bone",
-        Options = { "Head", "Torso", "HumanoidRootPart" },
+        Name = "Hit Part",
+        Options = { "Head", "Torso", "Random", "HumanoidRootPart" },
         Default = CFG.AimBone,
         Callback = function(v)
             CFG.AimBone = v
         end,
     }, ctx.flag("CW_AimBone"))
+    slider(sa, {
+        Name = "Head Chance",
+        Flag = "CW_HeadChance",
+        Default = CFG.HeadChance,
+        Min = 0,
+        Max = 100,
+        Suffix = "%",
+        Desc = "When Hit Part is Head, chance to go for the head. Otherwise torso.",
+        Callback = function(v)
+            CFG.HeadChance = v
+        end,
+    })
     slider(sa, {
         Name = "FOV",
         Flag = "CW_SA_FOV",
@@ -5605,7 +5676,7 @@ local function buildUI(ctx)
         Name = "Bullet Speed",
         Flag = "CW_InstantMul",
         Default = CFG.InstantHitMul,
-        Min = 1.2,
+        Min = 1,
         Max = 4,
         Precision = 2,
         Suffix = "x",
