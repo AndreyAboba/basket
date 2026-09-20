@@ -99,8 +99,6 @@ local CFG = {
     AutoHeal = false,
     AutoHealRadius = 7,
     AutoHealSelf = true,
-    AutoRevive = false,
-    AutoReviveHold = 1.5,
     AutoRecon = false,
 
     MultiPoint = true,
@@ -649,9 +647,6 @@ function F.ensure_support_remotes()
         if not lastSupport.binRE then
             lastSupport.binRE = rem:FindFirstChild("Binoculars")
         end
-        if not lastSupport.reviveRE then
-            lastSupport.reviveRE = rem:FindFirstChild("BeingRevived")
-        end
     end
     if lastSupport.binRE and not lastSupport.reconHooked then
         lastSupport.reconHooked = true
@@ -733,10 +728,24 @@ end
 function F.bins_zoomed()
     local pg = LP:FindFirstChild("PlayerGui")
     local gui = pg and pg:FindFirstChild("BinocularsGui")
-    if gui and gui.Enabled == true then
-        return true
+    return gui ~= nil and gui.Enabled == true
+end
+
+function F.recon_is_command()
+    local ct = F.class_type()
+    return type(ct) == "string" and string.lower(ct) == "command"
+end
+
+function F.recon_aim()
+    local center = lastSupport.spotPos
+    if not (CFG.AutoRecon and center and Cam) then
+        return
     end
-    return Cam and Cam.FieldOfView < 45
+    local origin = Cam.CFrame.Position
+    if (center - origin).Magnitude < 0.05 then
+        return
+    end
+    Cam.CFrame = CFrame.lookAt(origin, center)
 end
 
 function F.recon_cluster()
@@ -747,9 +756,13 @@ function F.recon_cluster()
     local origin = Cam.CFrame.Position
     local vs = Cam.ViewportSize
     local aspect = vs.X / math.max(vs.Y, 1)
-    local halfV = math.rad(Cam.FieldOfView) * 0.5
+    local fov = Cam.FieldOfView
+    if type(fov) ~= "number" or fov < 4 then
+        fov = 12
+    end
+    local halfV = math.rad(fov) * 0.5
     local halfH = math.atan(math.tan(halfV) * aspect)
-    local cone = math.cos(math.min(halfH, halfV) * 0.9)
+    local cone = math.cos(math.min(halfH, halfV) * 0.92)
     local slots = lastSupport.reconPts
     if not slots then
         slots = {}
@@ -757,7 +770,7 @@ function F.recon_cluster()
     end
     local n = 0
     for ri = 1, rosterN do
-        if n >= 8 then
+        if n >= 12 then
             break
         end
         local pl = roster[ri]
@@ -767,8 +780,7 @@ function F.recon_cluster()
             local char = r.char
             if bone and char then
                 local pos = bone.Position
-                local sp, on = Cam:WorldToViewportPoint(pos)
-                if on and sp.Z > 0 and F.cached_visible(pl, origin, pos) then
+                if F.cached_visible(pl, origin, pos) then
                     n += 1
                     local slot = slots[n]
                     if not slot then
@@ -882,47 +894,35 @@ function F.tick_support()
     else
         F.stop_heal()
     end
-    if CFG.AutoRevive and hrp then
-        local fpp = fireproximityprompt
-        if type(fpp) == "function" and now >= (lastSupport.reviveUntil or 0) then
-            local bestP, bestD
-            for ri = 1, rosterN do
-                local pl = roster[ri]
-                if pl ~= LP and LP.Team and pl.Team and LP.Team == pl.Team then
-                    local r = F.char_ref(pl)
-                    local u = F.cv_val(r.char, "Unconscious")
-                    if (u == true or u == 1) and r.hrp and r.char then
-                        local d = (r.hrp.Position - hrp.Position).Magnitude
-                        if d <= 8 then
-                            local prompt = r.char:FindFirstChild("RevivePrompt", true)
-                            if prompt and prompt:IsA("ProximityPrompt") and (not bestD or d < bestD) then
-                                bestP, bestD = prompt, d
-                            end
-                        end
-                    end
-                end
-            end
-            if bestP then
-                lastSupport.reviveUntil = now + 4
-                pcall(fpp, bestP)
-            end
-        end
-    end
     if CFG.AutoRecon and lastSupport.binRE and Cam and hrp and F.held_named("binocular") and F.bins_zoomed() and F.recon_cd_ready(now) then
         local dir, center, count = F.recon_cluster()
-        if dir then
+        if dir and center then
             lastSupport.spotPos = center
             lastSupport.spotLook = dir
             lastSupport.spotN = count
-            lastSupport.reconUntil = now + 8
-            pcall(function()
-                lastSupport.binRE:FireServer("Spotting", dir)
-            end)
+            F.recon_aim()
+            if not lastSupport.scoutAt then
+                lastSupport.scoutAt = now
+            end
+            local need = F.recon_is_command() and 3 or 1
+            if now - lastSupport.scoutAt >= need then
+                lastSupport.scoutAt = nil
+                lastSupport.reconUntil = now + 2
+                local look = Cam.CFrame.LookVector
+                local kind = F.recon_is_command() and "Designate" or "Spotting"
+                pcall(function()
+                    lastSupport.binRE:FireServer(kind, look)
+                end)
+            end
         else
             lastSupport.spotPos = nil
+            lastSupport.scoutAt = nil
         end
-    elseif not (CFG.AutoRecon and F.held_named("binocular") and F.bins_zoomed()) then
-        lastSupport.spotPos = nil
+    else
+        lastSupport.scoutAt = nil
+        if not (CFG.AutoRecon and F.held_named("binocular") and F.bins_zoomed()) then
+            lastSupport.spotPos = nil
+        end
     end
 end
 
@@ -3752,6 +3752,7 @@ function F.paint_overlay()
             end
         end
     elseif CFG.AutoRecon and lastSupport.spotPos then
+        F.recon_aim()
         local tScreen = cam:WorldToViewportPoint(lastSupport.spotPos)
         if tScreen.Z > 0 then
             F.draw_reticle(tScreen.X, tScreen.Y, COL.TIER2, now)
@@ -5681,7 +5682,7 @@ function F.install_movement()
                 end
             end
         end
-        if not (CFG.Fly or CFG.Speed or CFG.NoClip) then
+        if not (CFG.Fly or CFG.NoClip) then
             return
         end
         if dt <= 0 then
@@ -5735,17 +5736,6 @@ function F.install_movement()
             end
             hrp:ApplyImpulse(V3(0, mass * Workspace.Gravity * dt, 0))
             hrp.AssemblyLinearVelocity = want
-        elseif CFG.Speed then
-            local md = hum.MoveDirection
-            if md.Magnitude > 0.05 then
-                local spd = CFG.SpeedStuds
-                if type(spd) ~= "number" or spd < 1 then
-                    spd = 42
-                end
-                local horiz = md.Unit * spd
-                local vy = hrp.AssemblyLinearVelocity.Y
-                hrp.AssemblyLinearVelocity = V3(horiz.X, vy, horiz.Z)
-            end
         end
     end))
 end
@@ -7868,21 +7858,13 @@ function F.buildUI(ctx)
         end,
     })
 
-    local reviveSec = Misc:Section({ Side = "Left" })
-    reviveSec:Header({ Name = "Auto Revive" })
-    boolToggle(reviveSec, "Enabled", "CW_AutoRevive", function()
-        return CFG.AutoRevive
-    end, function(v)
-        CFG.AutoRevive = v
-    end, "Holds the revive prompt on a downed teammate. Keep off while fighting.")
-
     local reconSec = Misc:Section({ Side = "Right" })
     reconSec:Header({ Name = "Auto Recon" })
     boolToggle(reconSec, "Enabled", "CW_AutoRecon", function()
         return CFG.AutoRecon
     end, function(v)
         CFG.AutoRecon = v
-    end, "ADS binoculars. Spots a visible cluster in the current zoom. Respects cooldown.")
+    end, "ADS binoculars. Looks at a visible cluster, holds scout, then spots.")
 
     local dbg = Misc:Section({ Side = "Left" })
     dbg:Header({ Name = "Staff Detect" })
