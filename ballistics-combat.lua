@@ -709,20 +709,22 @@ function F.stop_heal()
 end
 
 function F.recon_cd_ready(now)
-    local pg = LP:FindFirstChild("PlayerGui")
-    local gui = pg and pg:FindFirstChild("BinocularsGui")
-    local cd = gui and (gui:FindFirstChild("CooldownText") or gui:FindFirstChild("CooldownText", true))
-    local vis = cd and cd.Visible == true
-    if vis then
-        lastSupport.reconCd = true
+    if now < (lastSupport.reconUntil or 0) then
         return false
     end
-    if lastSupport.reconCd then
-        lastSupport.reconCd = false
-        lastSupport.reconUntil = 0
-        return true
+    local pg = LP:FindFirstChild("PlayerGui")
+    local gui = pg and pg:FindFirstChild("BinocularsGui")
+    local cd = gui and gui:FindFirstChild("CooldownText")
+    if cd and cd.Visible == true then
+        local t = cd.Text
+        if type(t) == "string" then
+            local sec = tonumber(string.match(t, "(%d+)"))
+            if sec and sec > 0 then
+                return false
+            end
+        end
     end
-    return now >= (lastSupport.reconUntil or 0)
+    return true
 end
 
 function F.bins_zoomed()
@@ -894,35 +896,23 @@ function F.tick_support()
     else
         F.stop_heal()
     end
-    if CFG.AutoRecon and lastSupport.binRE and Cam and hrp and F.held_named("binocular") and F.bins_zoomed() and F.recon_cd_ready(now) then
+    if CFG.AutoRecon and lastSupport.binRE and Cam and hrp and F.held_named("binocular") and F.bins_zoomed() then
         local dir, center, count = F.recon_cluster()
         if dir and center then
             lastSupport.spotPos = center
             lastSupport.spotLook = dir
             lastSupport.spotN = count
+        end
+        if lastSupport.spotPos and F.recon_cd_ready(now) then
             F.recon_aim()
-            if not lastSupport.scoutAt then
-                lastSupport.scoutAt = now
-            end
-            local need = F.recon_is_command() and 3 or 1
-            if now - lastSupport.scoutAt >= need then
-                lastSupport.scoutAt = nil
-                lastSupport.reconUntil = now + 2
-                local look = Cam.CFrame.LookVector
-                local kind = F.recon_is_command() and "Designate" or "Spotting"
-                pcall(function()
-                    lastSupport.binRE:FireServer(kind, look)
-                end)
-            end
-        else
-            lastSupport.spotPos = nil
-            lastSupport.scoutAt = nil
+            local look = Cam.CFrame.LookVector
+            local kind = F.recon_is_command() and "Designate" or "Spotting"
+            lastSupport.binRE:FireServer(kind, look)
+            lastSupport.reconUntil = now + 2
         end
     else
+        lastSupport.spotPos = nil
         lastSupport.scoutAt = nil
-        if not (CFG.AutoRecon and F.held_named("binocular") and F.bins_zoomed()) then
-            lastSupport.spotPos = nil
-        end
     end
 end
 
