@@ -256,7 +256,6 @@ local origSendClaim = nil
 local extraHooksInstalled = false
 local extraHooks = {}
 local recoilHooked = false
-local ensure_recoil
 local ClientFire = nil
 local HitReporter = nil
 local ShotCodec = nil
@@ -268,7 +267,7 @@ local DILib = nil
 local useDI = false
 local AimCtrl = nil
 local CamCtrl = nil
-local function apply_custom_zoom()
+function F.apply_custom_zoom()
     if not CFG.CustomZoom then
         return
     end
@@ -360,12 +359,12 @@ local STATE_COLOR = {
     Sit = Color3.fromRGB(170, 180, 200),
 }
 
-local function bind(conn)
+function F.bind(conn)
     connections[#connections + 1] = conn
     return conn
 end
 
-local function roster_add(player)
+function F.roster_add(player)
     for i = 1, rosterN do
         if roster[i] == player then
             return
@@ -375,7 +374,7 @@ local function roster_add(player)
     roster[rosterN] = player
 end
 
-local function roster_remove(player)
+function F.roster_remove(player)
     for i = 1, rosterN do
         if roster[i] == player then
             roster[i] = roster[rosterN]
@@ -394,7 +393,7 @@ local function roster_remove(player)
     enemyOf[player] = nil
 end
 
-local function roster_rebuild()
+function F.roster_rebuild()
     table.clear(roster)
     rosterN = 0
     local list = Players:GetPlayers()
@@ -403,16 +402,16 @@ local function roster_rebuild()
         roster[rosterN] = list[i]
     end
 end
-roster_rebuild()
-bind(Players.PlayerAdded:Connect(roster_add))
-bind(Players.PlayerRemoving:Connect(roster_remove))
+F.roster_rebuild()
+F.bind(Players.PlayerAdded:Connect(F.roster_add))
+F.bind(Players.PlayerRemoving:Connect(F.roster_remove))
 
-local function cv(char)
+function F.cv(char)
     return char and char:FindFirstChild("CharacterValues")
 end
 
-local function cv_val(char, name)
-    local folder = cv(char)
+function F.cv_val(char, name)
+    local folder = F.cv(char)
     local v = folder and folder:FindFirstChild(name)
     if v == nil then
         return nil
@@ -598,7 +597,7 @@ function F.class_type()
     if type(a) == "string" and a ~= "" then
         return a
     end
-    local v = cv_val(LP.Character, "ClassType")
+    local v = F.cv_val(LP.Character, "ClassType")
     if type(v) == "string" then
         return v
     end
@@ -1042,7 +1041,7 @@ visParams.FilterType = Enum.RaycastFilterType.Exclude
 visParams.IgnoreWater = true
 local visIgnore = {}
 
-local function vis_filter_dirty()
+function F.vis_filter_dirty()
     if visF.builtChar ~= visF.myChar or visF.builtTool ~= visF.tool or visF.builtFolder ~= visF.ignoreFolder or visF.builtCam ~= visF.cam then
         return true
     end
@@ -1055,7 +1054,7 @@ local function vis_filter_dirty()
     return false
 end
 
-local function rebuild_vis_filter()
+function F.rebuild_vis_filter()
     local n = 0
     if visF.myChar then
         n += 1
@@ -1116,14 +1115,14 @@ function F.prep_frame(fromFire)
         local vp = Cam.ViewportSize
         vpX, vpY = vp.X, vp.Y
     end
-    if vis_filter_dirty() then
-        rebuild_vis_filter()
+    if F.vis_filter_dirty() then
+        F.rebuild_vis_filter()
     end
 end
 
 local visMemo = { frame = 0, char = nil, fx = 0, fy = 0, fz = 0, tx = 0, ty = 0, tz = 0, res = false }
 
-local function vis_pierce_inst(inst)
+function F.vis_pierce_inst(inst)
     if typeof(inst) ~= "Instance" then
         return false
     end
@@ -1169,7 +1168,7 @@ function F.world_visible(fromPos, toPos, char)
             ok = true
             break
         end
-        if not vis_pierce_inst(hit.Instance) then
+        if not F.vis_pierce_inst(hit.Instance) then
             ok = false
             break
         end
@@ -1779,7 +1778,7 @@ function F.player_hotbar_slots(player)
 end
 
 local aimIdByWeapon = {}
-local function mark_aim_id(tbl, id)
+function F.mark_aim_id(tbl, id)
     if type(id) ~= "string" and type(id) ~= "number" then
         return
     end
@@ -1813,9 +1812,9 @@ function F.aim_ids_of_weapon(name)
         if type(anims) ~= "table" then
             return
         end
-        mark_aim_id(tbl, anims.StanceAim)
-        mark_aim_id(tbl, anims.AimIdle)
-        mark_aim_id(tbl, anims.AimIdleUnchambered)
+        F.mark_aim_id(tbl, anims.StanceAim)
+        F.mark_aim_id(tbl, anims.AimIdle)
+        F.mark_aim_id(tbl, anims.AimIdleUnchambered)
     end
     eat(all.Animations)
     for _, v in all do
@@ -1917,7 +1916,7 @@ function F.player_states(player, char, hum, out)
     if stanceInst and stanceInst.Parent then
         stanceVal = stanceInst.Value
     else
-        stanceVal = cv_val(char, "Stance")
+        stanceVal = F.cv_val(char, "Stance")
     end
     if stanceVal == "Crouch" then
         out[#out + 1] = "Crouch"
@@ -2122,7 +2121,7 @@ function F.compute_bounds(cam, model, o, hrp)
     return r
 end
 
-local function set_draw_line(line, x1, y1, x2, y2, color, thick)
+function F.set_draw_line(line, x1, y1, x2, y2, color, thick)
     if line.Visible and line._x1 == x1 and line._y1 == y1 and line._x2 == x2 and line._y2 == y2 and line._c == color and line._th == thick then
         return
     end
@@ -2134,7 +2133,7 @@ local function set_draw_line(line, x1, y1, x2, y2, color, thick)
     line.To = V2(x2, y2)
 end
 
-local function set_text_pos(t, x, y)
+function F.set_text_pos(t, x, y)
     if t._x == x and t._y == y then
         return
     end
@@ -2148,20 +2147,20 @@ function F.draw_box(o, r, color)
     local used = 4
     if CFG.EspBoxMode == "Corner" then
         local cx, cy = min(w * CFG.EspCornerScale, w * 0.5), min(h * CFG.EspCornerScale, h * 0.5)
-        set_draw_line(o.boxLines[1], r.minX, r.minY, r.minX + cx, r.minY, color, thick)
-        set_draw_line(o.boxLines[2], r.minX, r.minY, r.minX, r.minY + cy, color, thick)
-        set_draw_line(o.boxLines[3], r.maxX - cx, r.minY, r.maxX, r.minY, color, thick)
-        set_draw_line(o.boxLines[4], r.maxX, r.minY, r.maxX, r.minY + cy, color, thick)
-        set_draw_line(o.boxLines[5], r.minX, r.maxY - cy, r.minX, r.maxY, color, thick)
-        set_draw_line(o.boxLines[6], r.minX, r.maxY, r.minX + cx, r.maxY, color, thick)
-        set_draw_line(o.boxLines[7], r.maxX, r.maxY - cy, r.maxX, r.maxY, color, thick)
-        set_draw_line(o.boxLines[8], r.maxX - cx, r.maxY, r.maxX, r.maxY, color, thick)
+        F.set_draw_line(o.boxLines[1], r.minX, r.minY, r.minX + cx, r.minY, color, thick)
+        F.set_draw_line(o.boxLines[2], r.minX, r.minY, r.minX, r.minY + cy, color, thick)
+        F.set_draw_line(o.boxLines[3], r.maxX - cx, r.minY, r.maxX, r.minY, color, thick)
+        F.set_draw_line(o.boxLines[4], r.maxX, r.minY, r.maxX, r.minY + cy, color, thick)
+        F.set_draw_line(o.boxLines[5], r.minX, r.maxY - cy, r.minX, r.maxY, color, thick)
+        F.set_draw_line(o.boxLines[6], r.minX, r.maxY, r.minX + cx, r.maxY, color, thick)
+        F.set_draw_line(o.boxLines[7], r.maxX, r.maxY - cy, r.maxX, r.maxY, color, thick)
+        F.set_draw_line(o.boxLines[8], r.maxX - cx, r.maxY, r.maxX, r.maxY, color, thick)
         used = 8
     else
-        set_draw_line(o.boxLines[1], r.minX, r.minY, r.maxX, r.minY, color, thick)
-        set_draw_line(o.boxLines[2], r.maxX, r.minY, r.maxX, r.maxY, color, thick)
-        set_draw_line(o.boxLines[3], r.maxX, r.maxY, r.minX, r.maxY, color, thick)
-        set_draw_line(o.boxLines[4], r.minX, r.maxY, r.minX, r.minY, color, thick)
+        F.set_draw_line(o.boxLines[1], r.minX, r.minY, r.maxX, r.minY, color, thick)
+        F.set_draw_line(o.boxLines[2], r.maxX, r.minY, r.maxX, r.maxY, color, thick)
+        F.set_draw_line(o.boxLines[3], r.maxX, r.maxY, r.minX, r.maxY, color, thick)
+        F.set_draw_line(o.boxLines[4], r.minX, r.maxY, r.minX, r.minY, color, thick)
         used = 4
     end
     for i = used + 1, #o.boxLines do
@@ -2274,7 +2273,7 @@ function F.update_esp_one(player, cam, origin)
             o.lastName = player.Name
             o.name.Text = player.Name
         end
-        set_text_pos(o.name, r.centerX, r.headTopY - (labelSize + 1) - 4)
+        F.set_text_pos(o.name, r.centerX, r.headTopY - (labelSize + 1) - 4)
     else
         o.name.Visible = false
     end
@@ -2286,7 +2285,7 @@ function F.update_esp_one(player, cam, origin)
             o.lastDist = dm
             o.dist.Text = dm .. "m"
         end
-        set_text_pos(o.dist, r.centerX, ly)
+        F.set_text_pos(o.dist, r.centerX, ly)
         ly += labelSize * ESPC.LineStep + ESPC.StackGap
     else
         o.dist.Visible = false
@@ -2300,7 +2299,7 @@ function F.update_esp_one(player, cam, origin)
                 o.lastWeapon = wname
                 o.weapon.Text = "[" .. wname .. "]"
             end
-            set_text_pos(o.weapon, r.centerX, ly)
+            F.set_text_pos(o.weapon, r.centerX, ly)
             ly += labelSize * ESPC.LineStep + ESPC.StackGap
         else
             o.weapon.Visible = false
@@ -2337,7 +2336,7 @@ function F.update_esp_one(player, cam, origin)
                 chip.Text = label
             end
             chip.Color = STATE_COLOR[label] or CFG.EspColorState
-            set_text_pos(chip, sx, y)
+            F.set_text_pos(chip, sx, y)
             chip.ZIndex = 24
             n = i
         end
@@ -2364,7 +2363,7 @@ function F.update_esp_one(player, cam, origin)
                 if text.Text ~= slot.text then
                     text.Text = slot.text
                 end
-                set_text_pos(text, r.centerX, ly)
+                F.set_text_pos(text, r.centerX, ly)
                 ly += (labelSize - 1) * ESPC.LineStep + ESPC.StackGap
             else
                 text.Visible = false
@@ -2393,7 +2392,7 @@ local chamSeen = {}
 local CHAMS_CAP = 31
 
 local chamHolderCache = nil
-local function cham_holder()
+function F.cham_holder()
     if chamHolderCache and chamHolderCache.Parent then
         return chamHolderCache
     end
@@ -2438,7 +2437,7 @@ function F.update_chams(origin)
     local visCol = CFG.ChamsColorVisible
     local hidCol = CFG.ChamsColorHidden
     local nOn = 0
-    local parent = cham_holder()
+    local parent = F.cham_holder()
     for i = 1, rosterN do
         if nOn >= CHAMS_CAP then
             break
@@ -2533,7 +2532,7 @@ do
         if ok and sig and type(sig.Connect) == "function" then
             DILib = di
             useDI = true
-            bind(sig:Connect(function()
+            F.bind(sig:Connect(function()
                 if F.paint_overlay then
                     F.paint_overlay()
                 end
@@ -2625,7 +2624,7 @@ if not useDI then
     end
 end
 
-local function acquire_draw(kind)
+function F.acquire_draw(kind)
     local free = drawPool[kind]
     local obj = free[#free]
     if obj then
@@ -2639,7 +2638,7 @@ local function acquire_draw(kind)
     return obj
 end
 
-local function release_draw(kind, obj)
+function F.release_draw(kind, obj)
     obj.Visible = false
     local free = drawPool[kind]
     if #free < 512 then
@@ -2649,13 +2648,13 @@ local function release_draw(kind, obj)
     end
 end
 
-local function release_particle(particle)
+function F.release_particle(particle)
     for _, drawing in particle.draw do
-        release_draw(particle.kind, drawing)
+        F.release_draw(particle.kind, drawing)
     end
 end
 
-local function tracer_alpha(age, life, fadeIn)
+function F.tracer_alpha(age, life, fadeIn)
     if age < fadeIn then
         local t = age / fadeIn
         return t * t
@@ -2668,7 +2667,7 @@ local function tracer_alpha(age, life, fadeIn)
     return (1 - t) * (1 - t)
 end
 
-local function play_hit_sound()
+function F.play_hit_sound()
     if not CFG.HitSound then
         return
     end
@@ -2692,7 +2691,7 @@ local function play_hit_sound()
     Debris:AddItem(s, 4)
 end
 
-local function spawn_particles(pos, normal)
+function F.spawn_particles(pos, normal)
     if not CFG.HitParticles then
         return
     end
@@ -2700,7 +2699,7 @@ local function spawn_particles(pos, normal)
         local old = table.remove(particleSystems, 1)
         if old then
             for _, particle in old.parts do
-                release_particle(particle)
+                F.release_particle(particle)
             end
         end
     end
@@ -2739,7 +2738,7 @@ local function spawn_particles(pos, normal)
             particle.kind = "Line"
             if not useDI then
                 for _ = 1, #TETRA.edges do
-                    local line = acquire_draw("Line")
+                    local line = F.acquire_draw("Line")
                     line.Thickness = 0.7
                     particle.draw[#particle.draw + 1] = line
                 end
@@ -2747,7 +2746,7 @@ local function spawn_particles(pos, normal)
         elseif CFG.HitParticleType == "Orbs" then
             particle.kind = "Circle"
             if not useDI then
-                local circle = acquire_draw("Circle")
+                local circle = F.acquire_draw("Circle")
                 circle.Filled = true
                 circle.NumSides = 12
                 particle.draw[1] = circle
@@ -2755,7 +2754,7 @@ local function spawn_particles(pos, normal)
         else
             particle.kind = "Line"
             if not useDI then
-                local line = acquire_draw("Line")
+                local line = F.acquire_draw("Line")
                 line.Thickness = 1.5
                 particle.draw[1] = line
             end
@@ -2765,7 +2764,7 @@ local function spawn_particles(pos, normal)
     particleSystems[#particleSystems + 1] = sys
 end
 
-local function update_particles(cam, dt)
+function F.update_particles(cam, dt)
     if not CFG.HitParticles or #particleSystems == 0 then
         return
     end
@@ -2777,7 +2776,7 @@ local function update_particles(cam, dt)
         local age = now - sys.t
         if age > duration then
             for pi = 1, #sys.parts do
-                release_particle(sys.parts[pi])
+                F.release_particle(sys.parts[pi])
             end
             local last = #particleSystems
             particleSystems[si] = particleSystems[last]
@@ -2890,12 +2889,12 @@ function F.hit_fx(fromPos, hitPos)
     if typeof(hitPos) ~= "Vector3" then
         return
     end
-    play_hit_sound()
+    F.play_hit_sound()
     local normal = V3(0, 1, 0)
     if typeof(fromPos) == "Vector3" and (hitPos - fromPos).Magnitude > 0.05 then
         normal = (hitPos - fromPos).Unit
     end
-    spawn_particles(hitPos, normal)
+    F.spawn_particles(hitPos, normal)
     if CFG.ShotTracers and typeof(fromPos) == "Vector3" then
         tracers[#tracers + 1] = { a = fromPos, b = hitPos, t = clock() }
         if #tracers > 32 then
@@ -2905,7 +2904,7 @@ function F.hit_fx(fromPos, hitPos)
     end
 end
 
-local function prune_tracers(now)
+function F.prune_tracers(now)
     local life = CFG.TracerDuration or 1.4
     for i = #tracers, 1, -1 do
         if now - tracers[i].t > life then
@@ -2916,8 +2915,8 @@ local function prune_tracers(now)
     end
 end
 
-local function update_tracers(cam, now)
-    prune_tracers(now)
+function F.update_tracers(cam, now)
+    F.prune_tracers(now)
     if useDI then
         return
     end
@@ -2937,7 +2936,7 @@ local function update_tracers(cam, now)
                 li += 1
                 local line = tracerLines[li]
                 local age = now - tr.t
-                local alpha = tracer_alpha(age, CFG.TracerDuration or 1.4, CFG.TracerFadeIn or 0.12)
+                local alpha = F.tracer_alpha(age, CFG.TracerDuration or 1.4, CFG.TracerFadeIn or 0.12)
                 line.Visible = true
                 line.Thickness = (CFG.TracerThickness or 0.9) + alpha * 0.5
                 line.Color = CFG.TracerColor
@@ -2952,10 +2951,10 @@ local function update_tracers(cam, now)
     end
 end
 
-local function free_hit_fx()
+function F.free_hit_fx()
     for _, sys in particleSystems do
         for _, particle in sys.parts do
-            release_particle(particle)
+            F.release_particle(particle)
         end
     end
     table.clear(particleSystems)
@@ -2972,7 +2971,7 @@ local function free_hit_fx()
     end
 end
 
-local function tier_color(tier)
+function F.tier_color(tier)
     if CFG.AimVisualColor then
         return CFG.AimVisualColor
     end
@@ -2989,7 +2988,7 @@ end
 local reticleColor = COL.TIER0
 local reticleAlpha = 0.95
 
-local function reticle_seg(i, x1, y1, x2, y2, thickness, alpha)
+function F.reticle_seg(i, x1, y1, x2, y2, thickness, alpha)
     local op = alpha or reticleAlpha
     if useDI then
         DILib.Line(V2(x1, y1), V2(x2, y2), reticleColor, op, thickness)
@@ -3007,7 +3006,7 @@ local function reticle_seg(i, x1, y1, x2, y2, thickness, alpha)
     line.Transparency = 1 - op
 end
 
-local function draw_reticle(cx, cy, color, now)
+function F.draw_reticle(cx, cy, color, now)
     if not useDI then
         for i = 1, #reticleLines do
             reticleLines[i].Visible = false
@@ -3017,7 +3016,7 @@ local function draw_reticle(cx, cy, color, now)
     local style = CFG.AimVisualStyle
     reticleColor = color
     reticleAlpha = 0.95
-    local seg = reticle_seg
+    local seg = F.reticle_seg
 
     if style == "Default" then
         local arm = 9 * sc
@@ -3070,7 +3069,7 @@ local function draw_reticle(cx, cy, color, now)
     end
 end
 
-local function hide_ch()
+function F.hide_ch()
     if useDI then
         return
     end
@@ -3083,7 +3082,7 @@ local function hide_ch()
     end
 end
 
-local function ch_seg(i, x1, y1, x2, y2, color, thick, op)
+function F.ch_seg(i, x1, y1, x2, y2, color, thick, op)
     if useDI then
         DILib.Line(V2(x1, y1), V2(x2, y2), color, op, thick)
         return
@@ -3101,7 +3100,7 @@ local function ch_seg(i, x1, y1, x2, y2, color, thick, op)
 end
 
 function F.paint_center_mark(style, color, size, gap, thick, op, ox, oy)
-    hide_ch()
+    F.hide_ch()
     local cx, cy = ox or (vpX * 0.5), oy or (vpY * 0.5)
     style = style or "Cross"
     color = color or COL.WHITE
@@ -3138,17 +3137,17 @@ function F.paint_center_mark(style, color, size, gap, thick, op, ox, oy)
         return
     end
     local g = (style == "Cross") and 0 or gap
-    ch_seg(1, cx - size, cy, cx - g, cy, color, thick, op)
-    ch_seg(2, cx + g, cy, cx + size, cy, color, thick, op)
+    F.ch_seg(1, cx - size, cy, cx - g, cy, color, thick, op)
+    F.ch_seg(2, cx + g, cy, cx + size, cy, color, thick, op)
     if style ~= "T" then
-        ch_seg(3, cx, cy - size, cx, cy - g, color, thick, op)
+        F.ch_seg(3, cx, cy - size, cx, cy - g, color, thick, op)
     end
-    ch_seg(4, cx, cy + g, cx, cy + size, color, thick, op)
+    F.ch_seg(4, cx, cy + g, cx, cy + size, color, thick, op)
 end
 
 local muzzleState = { att = nil, tool = false, fp = false, vm = nil }
 
-local function muzzle_att(root)
+function F.muzzle_att(root)
     if not root then
         return nil
     end
@@ -3188,13 +3187,13 @@ function F.muzzle_cframe()
             end
             muzzleState.vm = vm
         end
-        att = muzzle_att(vm)
+        att = F.muzzle_att(vm)
         if att then
             muzzleState.att, muzzleState.tool, muzzleState.fp = att, tool, firstPerson
             return att.WorldCFrame
         end
     end
-    att = muzzle_att(tool)
+    att = F.muzzle_att(tool)
     if att then
         muzzleState.att, muzzleState.tool, muzzleState.fp = att, tool, firstPerson
         return att.WorldCFrame
@@ -3362,7 +3361,7 @@ end
 
 local paintState = { cam = nil, now = 0, muzzlePos = nil }
 
-local function hide_aim_draw()
+function F.hide_aim_draw()
     if useDI then
         return
     end
@@ -3384,10 +3383,10 @@ local function hide_aim_draw()
     if abFovCircle then
         abFovCircle.Visible = false
     end
-    hide_ch()
+    F.hide_ch()
 end
 
-local function paint_world_line(fromPos, toPos, color, thick, opacity)
+function F.paint_world_line(fromPos, toPos, color, thick, opacity)
     local cam = paintState.cam
     if not cam then
         return
@@ -3468,10 +3467,10 @@ function F.paint_overlay()
             local spoofed = saTgt.spoof and (saTgt.spoof - muzzlePos).Magnitude > 0.05
             if useDI then
                 if spoofed then
-                    paint_world_line(muzzlePos, saTgt.spoof, COL.SPOOF_A, 1.4, 0.3)
-                    paint_world_line(saTgt.spoof, saTgt.pos, COL.SPOOF_B, 2.2, 0.2)
+                    F.paint_world_line(muzzlePos, saTgt.spoof, COL.SPOOF_A, 1.4, 0.3)
+                    F.paint_world_line(saTgt.spoof, saTgt.pos, COL.SPOOF_B, 2.2, 0.2)
                 else
-                    paint_world_line(muzzlePos, saTgt.pos, CFG.MuzzleLineColor, CFG.MuzzleLineThick, CFG.MuzzleLineTrans or 0.15)
+                    F.paint_world_line(muzzlePos, saTgt.pos, CFG.MuzzleLineColor, CFG.MuzzleLineThick, CFG.MuzzleLineTrans or 0.15)
                 end
             else
                 local mScreen = cam:WorldToViewportPoint(muzzlePos)
@@ -3522,7 +3521,7 @@ function F.paint_overlay()
     if CFG.SilentAim and CFG.AimVisuals and saTgt and saTgt.pos then
         local tScreen = cam:WorldToViewportPoint(saTgt.pos)
         if tScreen.Z > 0 then
-            draw_reticle(tScreen.X, tScreen.Y, tier_color(saTgt.tier), now)
+            F.draw_reticle(tScreen.X, tScreen.Y, F.tier_color(saTgt.tier), now)
         elseif not useDI then
             for i = 1, #reticleLines do
                 reticleLines[i].Visible = false
@@ -3541,8 +3540,8 @@ function F.paint_overlay()
         for i = 1, n do
             local tr = tracers[i]
             local age = now - tr.t
-            local alpha = tracer_alpha(age, life, fadeIn)
-            paint_world_line(tr.a, tr.b, CFG.TracerColor, (CFG.TracerThickness or 0.9) + alpha * 0.5, alpha)
+            local alpha = F.tracer_alpha(age, life, fadeIn)
+            F.paint_world_line(tr.a, tr.b, CFG.TracerColor, (CFG.TracerThickness or 0.9) + alpha * 0.5, alpha)
         end
     end
 
@@ -3619,12 +3618,12 @@ function F.paint_overlay()
             oy
         )
     else
-        hide_ch()
+        F.hide_ch()
     end
 end
 
 local namedModCache = {}
-local function find_named_mod(root, name)
+function F.find_named_mod(root, name)
     if not root then
         return nil
     end
@@ -3651,7 +3650,7 @@ local function find_named_mod(root, name)
     return nil
 end
 
-local function collect_str_consts(fn, depth)
+function F.collect_str_consts(fn, depth)
     local out = {}
     if type(fn) ~= "function" then
         return out
@@ -3682,7 +3681,7 @@ local function collect_str_consts(fn, depth)
             if not ok or type(proto) ~= "function" then
                 break
             end
-            local inner = collect_str_consts(proto, 0)
+            local inner = F.collect_str_consts(proto, 0)
             for j = 1, #inner do
                 out[#out + 1] = inner[j]
             end
@@ -3691,8 +3690,8 @@ local function collect_str_consts(fn, depth)
     return out
 end
 
-local function has_str_const(fn, s)
-    local consts = collect_str_consts(fn)
+function F.has_str_const(fn, s)
+    local consts = F.collect_str_consts(fn)
     for i = 1, #consts do
         if consts[i] == s then
             return true
@@ -3701,11 +3700,11 @@ local function has_str_const(fn, s)
     return false
 end
 
-local function is_volley_fn(fn)
-    return has_str_const(fn, "encodeFire") or has_str_const(fn, "beginDischarge")
+function F.is_volley_fn(fn)
+    return F.has_str_const(fn, "encodeFire") or F.has_str_const(fn, "beginDischarge")
 end
 
-local function export_matching(mod, pred)
+function F.export_matching(mod, pred)
     if type(mod) ~= "table" then
         return nil, nil
     end
@@ -3717,11 +3716,11 @@ local function export_matching(mod, pred)
     return nil, nil
 end
 
-local function key_from_caller(mod, caller, pred)
+function F.key_from_caller(mod, caller, pred)
     if type(mod) ~= "table" or type(caller) ~= "function" then
         return nil, nil
     end
-    local consts = collect_str_consts(caller)
+    local consts = F.collect_str_consts(caller)
     local hitFn, hitKey, nHit = nil, nil, 0
     for i = 1, #consts do
         local s = consts[i]
@@ -3737,7 +3736,7 @@ local function key_from_caller(mod, caller, pred)
     return nil, nil
 end
 
-local function resolve_volley(mod)
+function F.resolve_volley(mod)
     if type(mod) ~= "table" then
         return nil, nil
     end
@@ -3747,8 +3746,8 @@ local function resolve_volley(mod)
     if type(mod.tRa_ASYc_V) == "function" then
         return mod.tRa_ASYc_V, "tRa_ASYc_V"
     end
-    local fn, key = export_matching(mod, function(v)
-        return is_volley_fn(v)
+    local fn, key = F.export_matching(mod, function(v)
+        return F.is_volley_fn(v)
     end)
     if fn then
         return fn, key
@@ -3759,14 +3758,14 @@ local function resolve_volley(mod)
     local muzzle = weapon and weapon:FindFirstChild("Muzzle")
     local dInst = muzzle and muzzle:FindFirstChild("Discharge")
     if not dInst then
-        dInst = find_named_mod(ReplicatedStorage, "Discharge")
+        dInst = F.find_named_mod(ReplicatedStorage, "Discharge")
     end
     if dInst then
         local ok, d = pcall(require, dInst)
         if ok and type(d) == "table" and type(d.fire) == "function" then
-            fn, key = key_from_caller(mod, d.fire, is_volley_fn)
+            fn, key = F.key_from_caller(mod, d.fire, F.is_volley_fn)
             if not fn then
-                fn, key = key_from_caller(mod, d.fire)
+                fn, key = F.key_from_caller(mod, d.fire)
             end
             if fn and key ~= "fire" then
                 return fn, key
@@ -3776,7 +3775,7 @@ local function resolve_volley(mod)
     return nil, nil
 end
 
-local function resolve_recoil(mod)
+function F.resolve_recoil(mod)
     if type(mod) ~= "table" then
         return nil, nil
     end
@@ -3793,11 +3792,11 @@ local function resolve_recoil(mod)
         getSpring = true,
         onMuzzleChanged = true,
     }
-    local fn, key = export_matching(mod, function(v, k)
+    local fn, key = F.export_matching(mod, function(v, k)
         if skip[k] then
             return false
         end
-        return has_str_const(v, "DebugShotsGui") or has_str_const(v, "recoil suppressed")
+        return F.has_str_const(v, "DebugShotsGui") or F.has_str_const(v, "recoil suppressed")
     end)
     if fn then
         return fn, key
@@ -3808,7 +3807,7 @@ local function resolve_recoil(mod)
     if weaponInst then
         local okW, WeaponMod = pcall(require, weaponInst)
         if okW and type(WeaponMod) == "table" and type(WeaponMod._onMuzzleFired) == "function" then
-            fn, key = key_from_caller(mod, WeaponMod._onMuzzleFired)
+            fn, key = F.key_from_caller(mod, WeaponMod._onMuzzleFired)
             if fn then
                 return fn, key
             end
@@ -3817,17 +3816,17 @@ local function resolve_recoil(mod)
     return nil, nil
 end
 
-local function load_game_modules()
+function F.load_game_modules()
     local ps = LP:WaitForChild("PlayerScripts", 15)
     local cfInst, hrInst
     for _ = 1, 40 do
-        cfInst = find_named_mod(ps, "ClientFire")
-        hrInst = find_named_mod(ps, "HitReporter")
+        cfInst = F.find_named_mod(ps, "ClientFire")
+        hrInst = F.find_named_mod(ps, "HitReporter")
         if cfInst then
             local ok, mod = pcall(require, cfInst)
             if ok and type(mod) == "table" then
                 ClientFire = mod
-                if resolve_volley(mod) then
+                if F.resolve_volley(mod) then
                     break
                 end
             end
@@ -3855,16 +3854,16 @@ local function load_game_modules()
     end
 end
 
-local function install_hooks()
-    local volleyFn, volleyKey = resolve_volley(ClientFire)
+function F.install_hooks()
+    local volleyFn, volleyKey = F.resolve_volley(ClientFire)
     if origFireVolley then
         return true
     end
     if not volleyFn then
         if not extraHooksInstalled then
             install_extra_hooks()
-        elseif ensure_recoil then
-            ensure_recoil()
+        elseif F.ensure_recoil then
+            F.ensure_recoil()
         end
         return false
     end
@@ -4106,7 +4105,7 @@ local function install_hooks()
     return true
 end
 
-local function hook_fn(obj, key, wrapperName, wrap)
+function F.hook_fn(obj, key, wrapperName, wrap)
     if not (obj and type(obj[key]) == "function") then
         return
     end
@@ -4131,7 +4130,7 @@ local function hook_fn(obj, key, wrapperName, wrap)
     end
 end
 
-ensure_recoil = function()
+F.ensure_recoil = function()
     if recoilHooked then
         return
     end
@@ -4147,11 +4146,11 @@ ensure_recoil = function()
     if not (ok and type(recoil) == "table") then
         return
     end
-    local _, recoilKey = resolve_recoil(recoil)
+    local _, recoilKey = F.resolve_recoil(recoil)
     if not recoilKey then
         return
     end
-    hook_fn(recoil, recoilKey, "noRecoil", function(orig, ...)
+    F.hook_fn(recoil, recoilKey, "noRecoil", function(orig, ...)
         if CFG.NoRecoil then
             return
         end
@@ -4185,7 +4184,7 @@ function install_extra_hooks()
                 if okc and type(CC) == "table" then
                     CamCtrl = CC
                     if type(CC.setFOV) == "function" then
-                        hook_fn(CC, "setFOV", "customZoom", function(orig, mag)
+                        F.hook_fn(CC, "setFOV", "customZoom", function(orig, mag)
                             if CFG.CustomZoom then
                                 local aiming = AimCtrl and type(AimCtrl.isAiming) == "function" and AimCtrl.isAiming()
                                 if aiming then
@@ -4200,7 +4199,7 @@ function install_extra_hooks()
             if weapon then
                 local okWep, WeaponMod = pcall(require, weapon)
                 if okWep and type(WeaponMod) == "table" and type(WeaponMod.adjustZero) == "function" then
-                    hook_fn(WeaponMod, "adjustZero", "wheelZoomEat", function(orig, self, dir, ...)
+                    F.hook_fn(WeaponMod, "adjustZero", "wheelZoomEat", function(orig, self, dir, ...)
                         if CFG.CustomZoom and CFG.WheelZoom then
                             local aiming = AimCtrl and type(AimCtrl.isAiming) == "function" and AimCtrl.isAiming()
                             if aiming then
@@ -4211,7 +4210,7 @@ function install_extra_hooks()
                     end)
                 end
             end
-            bind(UserInputService.InputChanged:Connect(function(input, processed)
+            F.bind(UserInputService.InputChanged:Connect(function(input, processed)
                 if processed or not CFG.CustomZoom or not CFG.WheelZoom then
                     return
                 end
@@ -4237,7 +4236,7 @@ function install_extra_hooks()
                 end
             end))
             if oka and aimCtrl and aimCtrl.getAlpha then
-                hook_fn(aimCtrl, "getAlpha", "instantAim", function(orig)
+                F.hook_fn(aimCtrl, "getAlpha", "instantAim", function(orig)
                     if CFG.InstantAim then
                         if aimCtrl.isAiming and aimCtrl.isAiming() then
                             return 1
@@ -4249,14 +4248,14 @@ function install_extra_hooks()
             end
             local ok, recoil = pcall(require, controllers:FindFirstChild("RecoilController"))
             if ok and type(recoil) == "table" then
-                ensure_recoil()
+                F.ensure_recoil()
             end
             local bipodFolder = controllers:FindFirstChild("bipod")
             local bipodMod = bipodFolder and bipodFolder:FindFirstChild("BipodController")
             if bipodMod then
                 local okb, bipod = pcall(require, bipodMod)
                 if okb and bipod and bipod.applyRecoil then
-                    hook_fn(bipod, "applyRecoil", "noBipodRecoil", function(orig, ...)
+                    F.hook_fn(bipod, "applyRecoil", "noBipodRecoil", function(orig, ...)
                         if CFG.NoRecoil then
                             return
                         end
@@ -4274,7 +4273,7 @@ function install_extra_hooks()
                 if oks and shooter and type(shooter.fire) == "function" and debug.getupvalue then
                     local okuv, spreadFn = pcall(debug.getupvalue, shooter.fire, 7)
                     if okuv and type(spreadFn) == "function" then
-                        hook_fn({ spreadVector = spreadFn }, "spreadVector", "noSpread", function(orig, dir, spread, ...)
+                        F.hook_fn({ spreadVector = spreadFn }, "spreadVector", "noSpread", function(orig, dir, spread, ...)
                             if CFG.NoSpread then
                                 return dir.Unit
                             end
@@ -4290,7 +4289,7 @@ function install_extra_hooks()
                     if child then
                         local okm, mod = pcall(require, child)
                         if okm and mod and type(mod.fire) == "function" then
-                            hook_fn(mod, "fire", "fullAuto_" .. name, function(orig, ctrl, ...)
+                            F.hook_fn(mod, "fire", "fullAuto_" .. name, function(orig, ctrl, ...)
                                 if CFG.FullAuto and automatic.fire then
                                     return automatic.fire(ctrl, ...)
                                 end
@@ -4306,7 +4305,7 @@ function install_extra_hooks()
             local oka2, animator = pcall(require, animatorMod)
             if oka2 and animator then
                 if animator.playAndYield then
-                    hook_fn(animator, "playAndYield", "instantEquipYield", function(orig, self, name, ...)
+                    F.hook_fn(animator, "playAndYield", "instantEquipYield", function(orig, self, name, ...)
                         local spd = CFG.EquipAnimSpeed or 8
                         if CFG.InstantEquip and (name == "EquipUnfold" or name == "Equip" or name == "Chamber") then
                             local track = self._track and self:_track(name)
@@ -4331,7 +4330,7 @@ function install_extra_hooks()
                     end)
                 end
                 if animator.playScaledTo then
-                    hook_fn(animator, "playScaledTo", "instantEquipScaled", function(orig, self, name, dur, ...)
+                    F.hook_fn(animator, "playScaledTo", "instantEquipScaled", function(orig, self, name, dur, ...)
                         local spd = CFG.EquipAnimSpeed or 8
                         if CFG.InstantEquip and (name == "EquipUnfold" or name == "Equip" or name == "Chamber") then
                             local track = self._track and self:_track(name)
@@ -4364,7 +4363,7 @@ function install_extra_hooks()
                     local oks, strat = pcall(require, stratMod)
                     if oks and strat then
                         if strat.playMain then
-                            hook_fn(strat, "playMain", "instantReloadMain", function(orig, mz, ctx, animName, reloadTime, ...)
+                            F.hook_fn(strat, "playMain", "instantReloadMain", function(orig, mz, ctx, animName, reloadTime, ...)
                                 if CFG.InstantReload then
                                     if mz and mz.animator and animName and mz.animator.has and mz.animator:has(animName) then
                                         local track = mz.animator._track and mz.animator:_track(animName)
@@ -4379,7 +4378,7 @@ function install_extra_hooks()
                             end)
                         end
                         if strat.finishChambering then
-                            hook_fn(strat, "finishChambering", "instantReloadFinish", function(orig, mz, ctx, ...)
+                            F.hook_fn(strat, "finishChambering", "instantReloadFinish", function(orig, mz, ctx, ...)
                                 if CFG.InstantReload then
                                     if mz and mz.chamber and not mz.chamber:isLoaded() then
                                         pcall(function()
@@ -4397,7 +4396,7 @@ function install_extra_hooks()
                 if reloadCtrlMod then
                     local okr, ReloadCtrl = pcall(require, reloadCtrlMod)
                     if okr and ReloadCtrl and ReloadCtrl._context then
-                        hook_fn(ReloadCtrl, "_context", "instantReloadCtx", function(orig, self, bulletIdx, ...)
+                        F.hook_fn(ReloadCtrl, "_context", "instantReloadCtx", function(orig, self, bulletIdx, ...)
                             local ctx = orig(self, bulletIdx, ...)
                             if CFG.InstantReload and type(ctx) == "table" then
                                 ctx.reloadTime = 0.05
@@ -4480,7 +4479,7 @@ function install_extra_hooks()
                 return CFG.AlwaysAct == true or CFG.ReloadSprint == true
             end
             if type(Wielder.isBusy) == "function" then
-                hook_fn(Wielder, "isBusy", "alwaysActBusy", function(orig, self, ...)
+                F.hook_fn(Wielder, "isBusy", "alwaysActBusy", function(orig, self, ...)
                     if act_on() then
                         return false
                     end
@@ -4488,7 +4487,7 @@ function install_extra_hooks()
                 end)
             end
             if type(Wielder.isConscious) == "function" then
-                hook_fn(Wielder, "isConscious", "alwaysActConscious", function(orig, self, ...)
+                F.hook_fn(Wielder, "isConscious", "alwaysActConscious", function(orig, self, ...)
                     if CFG.AlwaysAct then
                         return true
                     end
@@ -4496,7 +4495,7 @@ function install_extra_hooks()
                 end)
             end
             if type(Wielder.beginAction) == "function" then
-                hook_fn(Wielder, "beginAction", "alwaysActBegin", function(orig, self, ...)
+                F.hook_fn(Wielder, "beginAction", "alwaysActBegin", function(orig, self, ...)
                     if act_on() then
                         return
                     end
@@ -4504,7 +4503,7 @@ function install_extra_hooks()
                 end)
             end
             if type(Wielder.canAct) == "function" then
-                hook_fn(Wielder, "canAct", "alwaysActCan", function(orig, self, ...)
+                F.hook_fn(Wielder, "canAct", "alwaysActCan", function(orig, self, ...)
                     if CFG.AlwaysAct then
                         return true
                     end
@@ -4544,7 +4543,7 @@ function install_extra_hooks()
             end
         end
         if tuneFn then
-            hook_fn(MT, tuneFn, "moveTune", function(orig, ctx)
+            F.hook_fn(MT, tuneFn, "moveTune", function(orig, ctx)
                 orig(ctx)
                 if type(ctx) ~= "table" then
                     return
@@ -4600,7 +4599,7 @@ function install_extra_hooks()
             local okC, VC = pcall(require, vcInst)
             if okC and type(VC) == "table" then
                 if type(VC.GetSeatTracks) == "function" then
-                    hook_fn(VC, "GetSeatTracks", "instantSitTracks", function(orig, self, name, seat)
+                    F.hook_fn(VC, "GetSeatTracks", "instantSitTracks", function(orig, self, name, seat)
                         local tracks = orig(self, name, seat)
                         if CFG.InstantSit and type(tracks) == "table" then
                             speed_track(tracks.enter)
@@ -4619,7 +4618,7 @@ function install_extra_hooks()
                     end)
                 end
                 if type(VC._requestExit) == "function" then
-                    hook_fn(VC, "_requestExit", "instantSitRequestExit", function(orig, self, ...)
+                    F.hook_fn(VC, "_requestExit", "instantSitRequestExit", function(orig, self, ...)
                         if CFG.InstantSit and type(self) == "table" and type(self._seatTracks) == "table" then
                             local exit = self._seatTracks.exit
                             speed_track(exit)
@@ -4924,13 +4923,13 @@ function install_extra_hooks()
             local seat = seat_of_prompt(prompt)
             local ov = seat and seat:FindFirstChild("Occupant")
             if ov and ov:IsA("ObjectValue") then
-                bind(ov.Changed:Connect(function()
+                F.bind(ov.Changed:Connect(function()
                     if CFG.VehicleStealer then
                         unlock_prompt(prompt)
                     end
                 end))
             end
-            bind(prompt.Triggered:Connect(function(player)
+            F.bind(prompt.Triggered:Connect(function(player)
                 if player ~= LP or not CFG.VehicleStealer then
                     return
                 end
@@ -4946,7 +4945,7 @@ function install_extra_hooks()
                     set_hl(veh, false)
                 end
             end))
-            bind(prompt.Destroying:Connect(function()
+            F.bind(prompt.Destroying:Connect(function()
                 watching[prompt] = nil
                 origDist[prompt] = nil
                 hiddenPrompts[prompt] = nil
@@ -5050,8 +5049,8 @@ function install_extra_hooks()
         end
 
         task.defer(scan_vehicle_prompts)
-        bind(CS:GetInstanceAddedSignal("VehiclePrompt"):Connect(watch_prompt))
-        bind(CS:GetInstanceAddedSignal("FactoryVehicleSeat"):Connect(function(seat)
+        F.bind(CS:GetInstanceAddedSignal("VehiclePrompt"):Connect(watch_prompt))
+        F.bind(CS:GetInstanceAddedSignal("FactoryVehicleSeat"):Connect(function(seat)
             if not CFG.VehicleStealer or not seat then
                 return
             end
@@ -5060,12 +5059,12 @@ function install_extra_hooks()
                 watch_prompt(p)
             end
         end))
-        bind(CS:GetInstanceAddedSignal("AdoptVehicle"):Connect(function(veh)
+        F.bind(CS:GetInstanceAddedSignal("AdoptVehicle"):Connect(function(veh)
             if CFG.VehicleStealer and is_locked_veh(veh) then
                 set_hl(veh, true)
             end
         end))
-        bind(PPS.PromptTriggered:Connect(function(prompt, player)
+        F.bind(PPS.PromptTriggered:Connect(function(prompt, player)
             if not CFG.VehicleStealer or player ~= LP then
                 return
             end
@@ -5081,7 +5080,7 @@ function install_extra_hooks()
                 set_hl(veh, false)
             end
         end))
-        bind(LP.CharacterAdded:Connect(function()
+        F.bind(LP.CharacterAdded:Connect(function()
             task.defer(scan_vehicle_prompts)
         end))
         F.stealer_off = function()
@@ -5132,7 +5131,7 @@ function install_extra_hooks()
             if wd then
                 local okW, WheelDrive = pcall(require, wd)
                 if okW and type(WheelDrive) == "table" and type(WheelDrive.new) == "function" then
-                    hook_fn(WheelDrive, "new", "vehicleSpeedWheel", function(orig, vehicle, config, inputs)
+                    F.hook_fn(WheelDrive, "new", "vehicleSpeedWheel", function(orig, vehicle, config, inputs)
                         if CFG.VehicleSpeed then
                             config = scale_torque(config)
                         end
@@ -5144,7 +5143,7 @@ function install_extra_hooks()
             if td then
                 local okT, TrackDrive = pcall(require, td)
                 if okT and type(TrackDrive) == "table" and type(TrackDrive.new) == "function" then
-                    hook_fn(TrackDrive, "new", "vehicleSpeedTrack", function(orig, vehicle, config, inputs)
+                    F.hook_fn(TrackDrive, "new", "vehicleSpeedTrack", function(orig, vehicle, config, inputs)
                         if CFG.VehicleSpeed then
                             config = scale_torque(config)
                         end
@@ -5158,7 +5157,7 @@ function install_extra_hooks()
     do
         local okW, WeaponEffects = pcall(require, client:FindFirstChild("WeaponEffects"))
         if okW and type(WeaponEffects) == "table" and WeaponEffects.MuzzleFlash then
-            hook_fn(WeaponEffects, "MuzzleFlash", "shootEspMuzzle", function(orig, muzzle, ...)
+            F.hook_fn(WeaponEffects, "MuzzleFlash", "shootEspMuzzle", function(orig, muzzle, ...)
                 local model = muzzle and (muzzle:FindFirstAncestorOfClass("Model") or muzzle.Parent)
                 while model and model.Parent and not Players:GetPlayerFromCharacter(model) do
                     if model.Parent == Workspace then
@@ -5188,7 +5187,7 @@ function install_extra_hooks()
             end)
         end
         if okR and type(Recoil) == "table" and Recoil.ApplyShot then
-            hook_fn(Recoil, "ApplyShot", "shootEspRecoil", function(orig, info, ...)
+            F.hook_fn(Recoil, "ApplyShot", "shootEspRecoil", function(orig, info, ...)
                 if type(info) == "table" and info.UserId then
                     local plr = Players:GetPlayerByUserId(info.UserId)
                     if plr then
@@ -5203,7 +5202,7 @@ function install_extra_hooks()
 
 end
 
-local function restore_hooks()
+function F.restore_hooks()
     if origFireVolley and ClientFire then
         local key = fireVolleyKey or "fireVolley"
         if restorefunction then
@@ -5236,7 +5235,7 @@ local function restore_hooks()
     table.clear(extraHooks)
 end
 
-local function install_movement()
+function F.install_movement()
     local collideSave = {}
 
     local function hum_hrp()
@@ -5295,7 +5294,7 @@ local function install_movement()
                     inst.CanCollide = false
                 end
             end)
-            bind(noclipDesc)
+            F.bind(noclipDesc)
         end
     end
 
@@ -5366,7 +5365,7 @@ local function install_movement()
         end
     end
 
-    bind(LP.CharacterAdded:Connect(function()
+    F.bind(LP.CharacterAdded:Connect(function()
         table.clear(collideSave)
         if noclipDesc then
             noclipDesc:Disconnect()
@@ -5425,7 +5424,7 @@ local function install_movement()
         noclip_set(CFG.NoClip)
     end
 
-    bind(UserInputService.InputBegan:Connect(function(input, processed)
+    F.bind(UserInputService.InputBegan:Connect(function(input, processed)
         if F.maclibUi then
             return
         end
@@ -5442,7 +5441,7 @@ local function install_movement()
         end
     end))
 
-    bind(RunService.Heartbeat:Connect(function(dt)
+    F.bind(RunService.Heartbeat:Connect(function(dt)
         F.tick_support()
         local char, hum, hrp = hum_hrp()
         if char and hum and hrp and hum.Health > 0 and not CFG.NoClip and not CFG.Fly and not hum.Sit and not hum.SeatPart then
@@ -5536,11 +5535,11 @@ local function install_movement()
     end))
 end
 
-local function unload()
+function F.unload()
     pcall(RunService.UnbindFromRenderStep, RunService, "CW_VmAim")
     pcall(RunService.UnbindFromRenderStep, RunService, "CW_Aimbot")
     pcall(F.vm_style_restore)
-    restore_hooks()
+    F.restore_hooks()
     for _, conn in connections do
         conn:Disconnect()
     end
@@ -5549,7 +5548,7 @@ local function unload()
         F.free_esp(o)
         espByModel[model] = nil
     end
-    hide_aim_draw()
+    F.hide_aim_draw()
     if F.staff_warn_free then
         F.staff_warn_free()
     end
@@ -5565,7 +5564,7 @@ local function unload()
     if F.mv_off then
         F.mv_off()
     end
-    free_hit_fx()
+    F.free_hit_fx()
     if fovCircle then
         fovCircle:Remove()
     end
@@ -5594,7 +5593,7 @@ local function unload()
     
 end
 
-local function install_staff_detect()
+function F.install_staff_detect()
     local STAFF_GROUP = 32519006
     local STAFF_RANK = 103
     local STAFF_ROLES = {
@@ -5671,7 +5670,7 @@ local function install_staff_detect()
             pcall(LP.Kick, LP, "Staff detected")
             task.defer(function()
                 pcall(game.Shutdown, game)
-                pcall(unload)
+                pcall(F.unload)
             end)
         end
     end
@@ -5779,7 +5778,7 @@ local function install_staff_detect()
         task.delay(20, check_player, plr)
     end
 
-    bind(Players.PlayerAdded:Connect(watch_join))
+    F.bind(Players.PlayerAdded:Connect(watch_join))
     do
         local list = Players:GetPlayers()
         for i = 1, #list do
@@ -5795,7 +5794,7 @@ local function install_staff_detect()
             return
         end
         paHooked = pa
-        bind(pa.AttributeChanged:Connect(function(attr)
+        F.bind(pa.AttributeChanged:Connect(function(attr)
             if type(attr) ~= "string" or string.sub(attr, 1, 5) ~= "Role_" then
                 return
             end
@@ -5823,7 +5822,7 @@ local function install_staff_detect()
             hook_pa(pa)
             return
         end
-        bind(pg.ChildAdded:Connect(function(ch)
+        F.bind(pg.ChildAdded:Connect(function(ch)
             if ch.Name == "PrivateAttributes" then
                 hook_pa(ch)
             end
@@ -5860,21 +5859,21 @@ local function install_staff_detect()
     end
 end
 
-load_game_modules()
-if not install_hooks() then
+F.load_game_modules()
+if not F.install_hooks() then
     task.spawn(function()
         for _ = 1, 25 do
             task.wait(0.4)
-            pcall(load_game_modules)
-            if install_hooks() then
+            pcall(F.load_game_modules)
+            if F.install_hooks() then
                 return
             end
         end
         warn("[CWCombat] ClientFire.fireVolley not found")
     end)
 end
-install_movement()
-install_staff_detect()
+F.install_movement()
+F.install_staff_detect()
 pcall(function()
     RunService:BindToRenderStep("CW_VmAim", Enum.RenderPriority.Camera.Value + 2, function()
         F.vm_aim_offset()
@@ -5927,11 +5926,9 @@ pcall(function()
 end)
 
 
-local espCursor = 0
-local lastPickAt = 0
-local espHidden = false
+local espRun = { cursor = 0, pickAt = 0, hidden = false }
 
-bind(RunService.RenderStepped:Connect(function(dt)
+F.bind(RunService.RenderStepped:Connect(function(dt)
     Cam = Workspace.CurrentCamera
     if not Cam then
         return
@@ -5945,7 +5942,7 @@ bind(RunService.RenderStepped:Connect(function(dt)
     local muzzlePos = (mcf and mcf.Position) or Cam.CFrame.Position
     local origin = F.shot_origin(muzzlePos)
     if CFG.ESP then
-        espHidden = false
+        espRun.hidden = false
         F.sweep_esp_models()
         local n = rosterN
         if n > 0 then
@@ -5956,25 +5953,25 @@ bind(RunService.RenderStepped:Connect(function(dt)
                 end
             else
                 for i = 0, per - 1 do
-                    local idx = ((espCursor + i) % n) + 1
+                    local idx = ((espRun.cursor + i) % n) + 1
                     F.update_esp_one(roster[idx], Cam, muzzlePos)
                 end
-                espCursor = (espCursor + per) % n
+                espRun.cursor = (espRun.cursor + per) % n
             end
         end
     else
-        if not espHidden then
+        if not espRun.hidden then
             for _, o in espByModel do
                 F.hide_esp(o)
             end
-            espHidden = true
+            espRun.hidden = true
         end
     end
     F.update_chams(muzzlePos)
 
     local pickEvery = CFG.PickRate or 0
-    if CFG.SilentAim and (pickEvery <= 0 or now - lastPickAt >= pickEvery) then
-        lastPickAt = now
+    if CFG.SilentAim and (pickEvery <= 0 or now - espRun.pickAt >= pickEvery) then
+        espRun.pickAt = now
         saTgt = F.pick_silent_target(origin, CFG.SilentAimMaxDist, F.need_los())
     elseif not CFG.SilentAim then
         saTgt = nil
@@ -5983,8 +5980,8 @@ bind(RunService.RenderStepped:Connect(function(dt)
     paintState.cam = Cam
     paintState.now = now
     paintState.muzzlePos = muzzlePos
-    update_tracers(Cam, now)
-    update_particles(Cam, dt)
+    F.update_tracers(Cam, now)
+    F.update_particles(Cam, dt)
     if not useDI then
         F.paint_overlay()
     end
@@ -6715,7 +6712,7 @@ function F.buildUI(ctx)
         set = function(v)
             CFG.CustomZoom = v
             if v then
-                apply_custom_zoom()
+                F.apply_custom_zoom()
             elseif CamCtrl and type(CamCtrl.resetFOV) == "function" then
                 local aiming = AimCtrl and type(AimCtrl.isAiming) == "function" and AimCtrl.isAiming()
                 if not aiming then
@@ -6735,7 +6732,7 @@ function F.buildUI(ctx)
         Desc = "ADS magnification.",
         Callback = function(v)
             CFG.CustomZoomMul = v
-            apply_custom_zoom()
+            F.apply_custom_zoom()
         end,
     })
     boolToggle(gmZ, "Wheel Zoom", "CW_WheelZoom", function()
@@ -7244,7 +7241,7 @@ function F.buildUI(ctx)
     hs:Button({
         Name = "Preview",
         Callback = function()
-            play_hit_sound()
+            F.play_hit_sound()
         end,
     })
     hs:Dropdown({
@@ -7686,7 +7683,7 @@ function F.buildUI(ctx)
     dbg:Button({
         Name = "Unload Combat",
         Callback = function()
-            pcall(unload)
+            pcall(F.unload)
             notify("CWCombat", "unloaded")
         end,
     })
@@ -7694,7 +7691,7 @@ end
 
 getgenv().CWCombat = {
     config = CFG,
-    unload = unload,
+    unload = F.unload,
     pick = F.pick_silent_target,
     buildUI = F.buildUI,
 }
