@@ -87,6 +87,7 @@ local CFG = {
 
     ForceHit = false,
     InstantHit = true,
+    InstantHitMul = 2.2,
     SmartInstant = true,
     ForceHitDelay = 0,
     SmartInstantRefDist = 400,
@@ -1041,6 +1042,41 @@ function F.find_multipoint(origin, aimPoint, part, knownOccluded)
         end
     end
     return nil, 3
+end
+
+function F.boost_shot(proj, mul)
+    if type(proj) ~= "table" or proj.Alive ~= true then
+        return
+    end
+    mul = tonumber(mul)
+    if not mul or mul <= 1.01 then
+        return
+    end
+    if mul > 6 then
+        mul = 6
+    end
+    local arc = proj._arc
+    if type(arc) ~= "table" or type(arc.Traj) ~= "table" then
+        return
+    end
+    local traj = arc.Traj
+    local spd = traj.MuzzleSpeed
+    if type(spd) ~= "number" or spd <= 0 then
+        return
+    end
+    traj.MuzzleSpeed = spd * mul
+    if type(traj.Decay) == "number" and traj.Decay > 1e-6 then
+        traj.Decay = traj.Decay * mul
+        traj.MaxForward = traj.MuzzleSpeed / traj.Decay
+    elseif type(traj.Decay) == "number" and traj.Decay <= 1e-6 then
+        traj.MaxForward = 1 / 0
+    end
+    if type(traj.Gravity) == "number" then
+        traj.Gravity = traj.Gravity * mul * mul
+    end
+    if type(proj.Speed) == "number" then
+        proj.Speed = proj.Speed * mul
+    end
 end
 
 function F.claim_hit(seed, player, part, impact)
@@ -3320,22 +3356,6 @@ local function install_hooks()
             if type(seed) == "number" and claimedSeeds[seed] then
                 return
             end
-            if CFG.ForceHit and type(impact) == "table" then
-                local inst = impact.Instance
-                local model = inst and inst:FindFirstAncestorOfClass("Model")
-                local victim = model and Players:GetPlayerFromCharacter(model)
-                if victim and victim ~= LP then
-                    local partName = CFG.ForceHitPart
-                    if partName == "auto" or partName == nil then
-                        partName = CFG.AimBone or "Head"
-                    end
-                    local part = F.bone_of(victim.Character, partName)
-                    if part then
-                        impact.Instance = part
-                        impact.Position = part.Position
-                    end
-                end
-            end
             if type(impact) == "table" then
                 local inst = impact.Instance
                 local model = inst and inst:FindFirstAncestorOfClass("Model")
@@ -3488,54 +3508,21 @@ local function install_hooks()
         end
         lastShotFrom = fireOrigin
         local results = origFireVolley(tool, muzzleIdx, bulletIdx, fireOrigin, dirs, opts)
-        if CFG.InstantHit and redirected and tgt and type(results) == "table" then
-            local seed = results[1] and results[1].seed
-            if type(seed) == "number" then
-                F.prune_claims()
-                local player, bone, pos = tgt.player, tgt.bone, (tgt.claimPos or tgt.pos)
-                local from = fireOrigin
-                local peeked = peek == true
-                local delay = CFG.ForceHitDelay or 0
-                if CFG.SmartInstant then
-                    local dist = typeof(pos) == "Vector3" and typeof(from) == "Vector3" and (pos - from).Magnitude or 0
-                    local speed, drag = F.weapon_profile(tool, muzzleIdx, bulletIdx)
-                    local t = F.flight_time(dist, speed, drag)
-                    delay = math.clamp(t * 0.65, 0.06, CFG.SmartInstantMaxDelay or 0.9)
-                else
-                    delay = math.max(delay, F.ping_sec() * 0.5)
+        if type(results) == "table" then
+            local mul = 1
+            if CFG.InstantHit then
+                mul = CFG.InstantHitMul or 2.2
+            end
+            if CFG.ForceHit then
+                local fm = CFG.InstantHitMul or 2.2
+                if fm > mul then
+                    mul = fm
                 end
-                local function send()
-                    if claimedSeeds[seed] then
-                        return
-                    end
-                    if player == LP then
-                        return
-                    end
-                    if LP.Team and player.Team and LP.Team == player.Team then
-                        return
-                    end
-                    local char = player.Character
-                    if not char or not char.Parent then
-                        return
-                    end
-                    local liveBone = bone
-                    if not (liveBone and liveBone.Parent) then
-                        liveBone = F.bone_of(char, CFG.AimBone or "Head")
-                    end
-                    local hitPos = pos
-                    if not peeked and liveBone and liveBone.Parent then
-                        hitPos = liveBone.Position
-                        if tgt.inVeh then
-                            hitPos = F.extrap_pos(hitPos, F.target_vel(player, liveBone, true), F.ping_sec() * 0.5 + (CFG.InterpLeadVehicle or 0.1), CFG.PredictMaxLeadVehicle or 48)
-                        end
-                    end
-                    lastShotFrom = from
-                    F.claim_hit(seed, player, liveBone or bone, hitPos)
-                end
-                if delay <= 0 then
-                    send()
-                else
-                    task.delay(delay, send)
+            end
+            if mul > 1.01 then
+                for i = 1, #results do
+                    local row = results[i]
+                    F.boost_shot(row and row.proj, mul)
                 end
             end
         end
@@ -5613,37 +5600,24 @@ local function buildUI(ctx)
         return CFG.InstantHit
     end, function(v)
         CFG.InstantHit = v
-    end, "Registers the hit before the bullet arrives.")
-    boolToggle(sa, "Smart Delay", "CW_SmartInstant", function()
-        return CFG.SmartInstant
-    end, function(v)
-        CFG.SmartInstant = v
-    end, "Waits based on bullet speed so far shots still count.")
+    end, "Speeds up your tracer. The hit lands with the bullet.")
     slider(sa, {
-        Name = "Max Delay",
-        Flag = "CW_SmartMax",
-        Default = CFG.SmartInstantMaxDelay,
-        Min = 0.05,
-        Max = 1,
+        Name = "Bullet Speed",
+        Flag = "CW_InstantMul",
+        Default = CFG.InstantHitMul,
+        Min = 1.2,
+        Max = 4,
         Precision = 2,
-        Suffix = "s",
+        Suffix = "x",
         Callback = function(v)
-            CFG.SmartInstantMaxDelay = v
+            CFG.InstantHitMul = v
         end,
     })
     boolToggle(sa, "Force Hit", "CW_ForceHit", function()
         return CFG.ForceHit
     end, function(v)
         CFG.ForceHit = v
-    end, "Puts the hit on the selected bone.")
-    sa:Dropdown({
-        Name = "Force Hit Part",
-        Options = { "auto", "Head", "Torso" },
-        Default = CFG.ForceHitPart or "auto",
-        Callback = function(v)
-            CFG.ForceHitPart = v
-        end,
-    }, ctx.flag("CW_ForceHitPart"))
+    end, "Speeds the same tracer. Does not register a separate hit.")
 
     sa:Divider()
     sa:Header({ Name = "Prediction" })
