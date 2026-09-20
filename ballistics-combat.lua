@@ -564,9 +564,6 @@ function F.apply_force_hit(impact)
         return
     end
     if not victim then
-        if lastSupport.rolled ~= true then
-            return
-        end
         local from = lastShotFrom
         local pos = impact.Position
         if typeof(pos) ~= "Vector3" and inst then
@@ -885,45 +882,31 @@ function F.tick_support()
     else
         F.stop_heal()
     end
-    if CFG.AutoRevive and lastSupport.reviveRE and hrp then
-        local hold = tonumber(CFG.AutoReviveHold) or 1.5
-        if hold < 0.4 then
-            hold = 0.4
-        end
-        local cur = lastSupport.revive
-        if cur and lastSupport.reviveAt then
-            if now - lastSupport.reviveAt >= hold then
-                pcall(function()
-                    lastSupport.reviveRE:FireServer("complete", cur)
-                end)
-                lastSupport.revive = nil
-                lastSupport.reviveUntil = now + 0.8
-            end
-        elseif now >= (lastSupport.reviveUntil or 0) then
-            local best, bestD
+    if CFG.AutoRevive and hrp then
+        local fpp = fireproximityprompt
+        if type(fpp) == "function" and now >= (lastSupport.reviveUntil or 0) then
+            local bestP, bestD
             for ri = 1, rosterN do
                 local pl = roster[ri]
                 if pl ~= LP and LP.Team and pl.Team and LP.Team == pl.Team then
                     local r = F.char_ref(pl)
                     local u = F.cv_val(r.char, "Unconscious")
-                    if (u == true or u == 1) and r.hrp then
+                    if (u == true or u == 1) and r.hrp and r.char then
                         local d = (r.hrp.Position - hrp.Position).Magnitude
-                        if d <= 10 and (not bestD or d < bestD) then
-                            best, bestD = pl, d
+                        if d <= 8 then
+                            local prompt = r.char:FindFirstChild("RevivePrompt", true)
+                            if prompt and prompt:IsA("ProximityPrompt") and (not bestD or d < bestD) then
+                                bestP, bestD = prompt, d
+                            end
                         end
                     end
                 end
             end
-            if best then
-                lastSupport.revive = best
-                lastSupport.reviveAt = now
-                pcall(function()
-                    lastSupport.reviveRE:FireServer("begin", best)
-                end)
+            if bestP then
+                lastSupport.reviveUntil = now + 4
+                pcall(fpp, bestP)
             end
         end
-    elseif lastSupport.revive then
-        lastSupport.revive = nil
     end
     if CFG.AutoRecon and lastSupport.binRE and Cam and hrp and F.held_named("binocular") and F.bins_zoomed() and F.recon_cd_ready(now) then
         local dir, center, count = F.recon_cluster()
@@ -1551,7 +1534,10 @@ function F.find_multipoint(origin, aimPoint, part, knownOccluded)
 end
 
 function F.boost_shot(proj, mul)
-    if type(proj) ~= "table" or proj.Alive ~= true then
+    if type(proj) ~= "table" then
+        return
+    end
+    if proj.Alive == false then
         return
     end
     mul = tonumber(mul)
@@ -4140,33 +4126,6 @@ function F.install_hooks()
                         end
                         F.hit_fx(from, pos)
                     end
-                    if CFG.InstantHit then
-                        local dist = 0
-                        if typeof(lastShotFrom) == "Vector3" and typeof(pos) == "Vector3" then
-                            dist = (pos - lastShotFrom).Magnitude
-                        elseif typeof(pos) == "Vector3" then
-                            dist = pos.Magnitude
-                        end
-                        local tReal = F.flight_time(dist, lastVolleySpeed, lastVolleyDrag)
-                        local elapsed = clock() - lastVolleyAt
-                        local wait = (tReal - elapsed) * 0.2
-                        if wait > 0.12 then
-                            wait = 0.12
-                        end
-                        if wait > 0.02 then
-                            task.delay(wait, function()
-                                if type(impact) ~= "table" then
-                                    return
-                                end
-                                local live = impact.Instance
-                                if live and live.Parent and live:IsA("BasePart") then
-                                    impact.Position = live.Position
-                                end
-                                origSendClaim(seed, impact)
-                            end)
-                            return
-                        end
-                    end
                 end
             end
             return origSendClaim(seed, impact)
@@ -4303,7 +4262,7 @@ function F.install_hooks()
         if type(results) == "table" then
             local mul = 1
             if CFG.InstantHit then
-                mul = CFG.InstantHitMul or 2.4
+                mul = tonumber(CFG.InstantHitMul) or 2.4
             end
             if mul > 1.01 then
                 for i = 1, #results do
@@ -5698,7 +5657,7 @@ function F.install_movement()
     end))
 
     F.bind(RunService.Heartbeat:Connect(function(dt)
-        F.tick_support()
+        pcall(F.tick_support)
         local char, hum, hrp = hum_hrp()
         if char and hum and hrp and hum.Health > 0 and not CFG.NoClip and not CFG.Fly and not hum.Sit and not hum.SeatPart then
             if hrp.Massless or hrp.CollisionGroup == "Crew" then
@@ -7915,20 +7874,7 @@ function F.buildUI(ctx)
         return CFG.AutoRevive
     end, function(v)
         CFG.AutoRevive = v
-    end, "Revives the nearest downed teammate.")
-    slider(reviveSec, {
-        Name = "Hold Time",
-        Flag = "CW_AutoReviveHold",
-        Default = CFG.AutoReviveHold,
-        Min = 0.4,
-        Max = 10,
-        Precision = 1,
-        Suffix = "s",
-        Desc = "Vanilla is 3s medic / 10s else. Shorter may fail on the server.",
-        Callback = function(v)
-            CFG.AutoReviveHold = v
-        end,
-    })
+    end, "Holds the revive prompt on a downed teammate. Keep off while fighting.")
 
     local reconSec = Misc:Section({ Side = "Right" })
     reconSec:Header({ Name = "Auto Recon" })
