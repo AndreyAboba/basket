@@ -48,6 +48,7 @@ local CFG = {
     EspSmooth = false,
     EspSmoothAlpha = 0.5,
     EspVisibleCheck = true,
+    EspVisMaxDist = 900,
     EspTextSize = 14,
     EspColorVisible = Color3.fromRGB(70, 255, 90),
     EspColorHidden = Color3.fromRGB(255, 55, 55),
@@ -58,6 +59,20 @@ local CFG = {
     EspNameUseTier = true,
     EspHpHigh = Color3.fromRGB(70, 255, 90),
     EspHpLow = Color3.fromRGB(255, 55, 55),
+
+    Chams = false,
+    ChamsEnemyOnly = true,
+    ChamsMaxDistance = 700,
+    ChamsVisMaxDist = 900,
+    ChamsFillTrans = 0.55,
+    ChamsOutline = true,
+    ChamsOutlineTrans = 0.2,
+    ChamsColorVisible = Color3.fromRGB(70, 255, 90),
+    ChamsColorHidden = Color3.fromRGB(255, 55, 55),
+
+    CustomZoom = false,
+    CustomZoomMul = 2,
+    WheelZoom = false,
 
     SilentAim = true,
     VisibleCheck = true,
@@ -112,7 +127,7 @@ local CFG = {
     TurretSA = true,
     InstantSit = true,
     SitAnimSpeed = 8,
-    VehicleStealer = true,
+    VehicleStealer = false,
     VehicleStealHighlight = false,
     VehicleSpeed = true,
     VehicleSpeedMul = 2.2,
@@ -222,6 +237,7 @@ local connections = {}
 local espByModel = {}
 local visCache = {}
 local hotbarCache = {}
+local stateCache = {}
 local speedCache = {}
 local moveHint = {}
 local lastShotAt = {}
@@ -243,6 +259,19 @@ local Trajectory = nil
 local DILib = nil
 local useDI = false
 local AimCtrl = nil
+local CamCtrl = nil
+local function apply_custom_zoom()
+    if not CFG.CustomZoom then
+        return
+    end
+    if not (CamCtrl and type(CamCtrl.setFOV) == "function") then
+        return
+    end
+    local aiming = AimCtrl and type(AimCtrl.isAiming) == "function" and AimCtrl.isAiming()
+    if aiming then
+        pcall(CamCtrl.setFOV, CFG.CustomZoomMul or 1)
+    end
+end
 local lastAbDt = 1 / 60
 local vmSkin = nil
 local abPickAt, abTgt = 0, nil
@@ -338,6 +367,7 @@ local function roster_remove(player)
     charRefs[player] = nil
     visCache[player] = nil
     hotbarCache[player] = nil
+    stateCache[player] = nil
     moveHint[player] = nil
     lastShotAt[player] = nil
     aimTrackOf[player] = nil
@@ -789,7 +819,7 @@ local function rebuild_vis_filter()
     end
     visIgnoreN = n
     visBuiltChar, visBuiltTool, visBuiltFolder, visBuiltCam = visMyChar, visTool, visIgnoreFolder, visCam
-    visParams.FilterDescendantsInstances = visIgnore
+    visParams.FilterDescendantsInstances = table.clone(visIgnore)
 end
 
 function F.prep_frame(fromFire)
@@ -802,8 +832,16 @@ function F.prep_frame(fromFire)
         visIgnoreFolder = Workspace:FindFirstChild("Ignore")
     end
     visCam = Cam
-    local selfRef = F.char_ref(LP)
-    visTool = F.refresh_tool(selfRef)
+    if not (visTool and visTool.Parent == visMyChar) then
+        visTool = visMyChar and visMyChar:FindFirstChildWhichIsA("Tool")
+    end
+    local teamName = LP.Team and LP.Team.Name
+    local rayGroup = teamName == "PACT" and "RayPACT" or (teamName == "NATO" and "RayNATO" or "RayNeutral")
+    if visParams.CollisionGroup ~= rayGroup then
+        pcall(function()
+            visParams.CollisionGroup = rayGroup
+        end)
+    end
     if Cam then
         local vp = Cam.ViewportSize
         vpX, vpY = vp.X, vp.Y
@@ -819,22 +857,16 @@ local function vis_pierce_inst(inst)
     if typeof(inst) ~= "Instance" then
         return false
     end
-    if inst.Name == "HumanoidRootPart" then
+    local name = inst.Name
+    if name == "HumanoidRootPart" then
         return true
     end
-    local cur = inst
-    for _ = 1, 8 do
-        if not cur or cur == Workspace then
-            return false
-        end
-        if CollectionService:HasTag(cur, "AdoptVehicle") or CollectionService:HasTag(cur, "FactoryVehicleSeat") or CollectionService:HasTag(cur, "BallisticsPhantom") then
-            return true
-        end
-        local class = cur.ClassName
-        if class == "VehicleSeat" or class == "Seat" then
-            return true
-        end
-        cur = cur.Parent
+    local class = inst.ClassName
+    if class == "VehicleSeat" or class == "Seat" then
+        return true
+    end
+    if CollectionService:HasTag(inst, "FactoryVehicleSeat") or CollectionService:HasTag(inst, "BallisticsPhantom") then
+        return true
     end
     return false
 end
@@ -891,12 +923,14 @@ function F.cached_visible(player, fromPos, toPos)
     if ttl > 0 then
         local now = clock()
         local slot = visCache[player]
-        if slot and now - slot.t < ttl and slot.from and (slot.from - fromPos).Magnitude < 0.75 then
+        if slot and now - slot.t < ttl and slot.from and slot.to
+            and (slot.from - fromPos).Magnitude < 3
+            and (slot.to - toPos).Magnitude < 4 then
             return slot.v
         end
         local v = F.world_visible(fromPos, toPos, player.Character)
         slot = slot or {}
-        slot.t, slot.v, slot.from = now, v, fromPos
+        slot.t, slot.v, slot.from, slot.to = now, v, fromPos, toPos
         visCache[player] = slot
         return v
     end
@@ -1173,8 +1207,21 @@ function F.pick_silent_target(origin, maxDist, needVis, fovDeg, boneName, allowM
     for ri = 1, rosterN do
         local player = roster[ri]
         if F.enemy(player) then
-            local char = player.Character
-            local bone = F.bone_of(char, boneName) or F.bone_of(char, "Head")
+            local r = charRefs[player]
+            local char = r and r.char or player.Character
+            local bone
+            if r then
+                if boneName == "Head" then
+                    bone = r.head or r.hrp
+                elseif boneName == "Torso" then
+                    bone = r.torso or r.hrp
+                else
+                    bone = r.hrp or r.head
+                end
+            end
+            if not (bone and bone.Parent) then
+                bone = F.bone_of(char, boneName)
+            end
             if bone then
                 local nowPos = bone.Position
                 local dist = (nowPos - origin).Magnitude
@@ -1215,32 +1262,34 @@ function F.pick_silent_target(origin, maxDist, needVis, fovDeg, boneName, allowM
         candPool[j + 1] = key
     end
     local cand, tier, spoof = nil, 0, origin
-    local visLimit = math.min(nCand, 4)
-    for i = 1, visLimit do
-        local c = candPool[i]
-        if F.cached_visible(c.player, origin, c.pos) then
-            cand, tier, spoof = c, 0, origin
-            break
+    if needVis then
+        local visLimit = math.min(nCand, 4)
+        for i = 1, visLimit do
+            local c = candPool[i]
+            if F.cached_visible(c.player, origin, c.pos) then
+                cand = c
+                break
+            end
+        end
+    else
+        cand = candPool[1]
+    end
+    if not cand and allowMP ~= false and CFG.MultiPoint then
+        local mpLimit = math.min(nCand, 2)
+        for i = 1, mpLimit do
+            local c = candPool[i]
+            local mp = F.find_multipoint(origin, c.pos, c.bone, true)
+            if mp then
+                cand, tier, spoof = c, 2, mp
+                break
+            end
         end
     end
     if not cand then
-        if allowMP ~= false and CFG.MultiPoint then
-            local mpLimit = math.min(nCand, 4)
-            for i = 1, mpLimit do
-                local c = candPool[i]
-                local mp = F.find_multipoint(origin, c.pos, c.bone, true)
-                if mp then
-                    cand, tier, spoof = c, 2, mp
-                    break
-                end
-            end
-        end
-        if not cand then
+        if needVis then
             return nil
         end
-        if needVis and tier ~= 0 and not CFG.MultiPoint then
-            return nil
-        end
+        cand = candPool[1]
     end
     local nowPos = cand.pos
     local aimPos = nowPos
@@ -1297,7 +1346,7 @@ end
 function F.player_hotbar_slots(player)
     local now = clock()
     local cached = hotbarCache[player]
-    if cached and now - cached.t < 2 then
+    if cached and now - cached.t < 4 then
         return cached.list
     end
     local slots = cached and cached.list or {}
@@ -1403,7 +1452,12 @@ function F.ensure_aim_watch(player, char)
         if not id then
             return false
         end
-        local ids = F.aim_ids_of_weapon(F.equipped_weapon(player))
+        local r = charRefs[player]
+        local tool = r and r.tool
+        if not (tool and tool.Parent == r.char) then
+            return false
+        end
+        local ids = F.aim_ids_of_weapon(tool.Name)
         if not ids then
             return false
         end
@@ -1421,17 +1475,21 @@ function F.ensure_aim_watch(player, char)
         end
     end
     connections[#connections + 1] = animator.AnimationPlayed:Connect(consider)
-    local tracks = animator:GetPlayingAnimationTracks()
-    for _, track in tracks do
-        consider(track)
-    end
 end
 
 function F.player_states(player, char, hum, out)
+    local now = clock()
+    local rec = stateCache[player]
+    if rec and rec.out and now - rec.t < 0.2 then
+        return rec.out
+    end
     if out then
         table.clear(out)
     else
-        out = {}
+        out = rec and rec.out or {}
+        if rec then
+            table.clear(out)
+        end
     end
     F.ensure_aim_watch(player, char)
     local aiming = false
@@ -1481,6 +1539,13 @@ function F.player_states(player, char, hum, out)
         elseif hum.Sit then
             out[#out + 1] = "Sit"
         end
+    end
+    if not rec then
+        rec = { t = now, out = out }
+        stateCache[player] = rec
+    else
+        rec.t = now
+        rec.out = out
     end
     return out
 end
@@ -1623,8 +1688,8 @@ function F.feet_world(model, hrp, o)
     return V3(hrp.Position.X, hrp.Position.Y - hip - hrp.Size.Y * 0.5 - 0.2, hrp.Position.Z)
 end
 
-function F.compute_bounds(cam, model, o)
-    local hrp = F.hrp_of(model)
+function F.compute_bounds(cam, model, o, hrp)
+    hrp = hrp or F.hrp_of(model)
     if not hrp then
         return nil
     end
@@ -1748,7 +1813,8 @@ function F.update_esp_one(player, cam, origin)
         F.hide_esp(o)
         return
     end
-    local hrp = F.hrp_of(char)
+    local pref = charRefs[player]
+    local hrp = (pref and pref.hrp and pref.hrp.Parent and pref.hrp) or F.hrp_of(char)
     if not hrp then
         F.hide_esp(o)
         return
@@ -1758,7 +1824,7 @@ function F.update_esp_one(player, cam, origin)
         F.hide_esp(o)
         return
     end
-    local raw = F.compute_bounds(cam, char, o)
+    local raw = F.compute_bounds(cam, char, o, hrp)
     if not raw then
         F.hide_esp(o)
         return
@@ -1787,7 +1853,12 @@ function F.update_esp_one(player, cam, origin)
     o.hidden = false
     local vis = true
     if CFG.EspVisibleCheck then
-        vis = F.cached_visible(player, origin, hrp.Position)
+        local visMax = CFG.EspVisMaxDist
+        if type(visMax) == "number" and dist > visMax then
+            vis = false
+        else
+            vis = F.cached_visible(player, origin, hrp.Position)
+        end
     end
     local color = vis and CFG.EspColorVisible or CFG.EspColorHidden
     if CFG.EspBox then
@@ -1841,9 +1912,6 @@ function F.update_esp_one(player, cam, origin)
     else
         o.weapon.Visible = false
     end
-    for i = 1, #o.chips do
-        o.chips[i].Visible = false
-    end
     if CFG.EspShowStates then
         local selfRef = F.char_ref(player)
         local hum = selfRef and selfRef.hum
@@ -1856,6 +1924,7 @@ function F.update_esp_one(player, cam, origin)
         if sx < 2 then
             sx = 2
         end
+        local n = 0
         for i, label in states do
             local chip = o.chips[i]
             if not chip then
@@ -1874,7 +1943,19 @@ function F.update_esp_one(player, cam, origin)
             chip.Color = STATE_COLOR[label] or CFG.EspColorState
             set_text_pos(chip, sx, y)
             chip.ZIndex = 24
+            n = i
         end
+        for i = n + 1, #o.chips do
+            if o.chips[i].Visible then
+                o.chips[i].Visible = false
+            end
+        end
+        o.chipsOn = n > 0
+    elseif o.chipsOn then
+        for i = 1, #o.chips do
+            o.chips[i].Visible = false
+        end
+        o.chipsOn = false
     end
     if CFG.EspShowHotbar then
         local slots = F.player_hotbar_slots(player)
@@ -1908,6 +1989,118 @@ function F.update_esp_one(player, cam, origin)
         o.hpFill.Position = V2(x, y + h * (1 - frac))
     else
         o.hpOutline.Visible, o.hpBg.Visible, o.hpFill.Visible = false, false, false
+    end
+end
+
+local chamByChar = {}
+local chamSeen = {}
+local CHAMS_CAP = 31
+
+local chamHolderCache = nil
+local function cham_holder()
+    if chamHolderCache and chamHolderCache.Parent then
+        return chamHolderCache
+    end
+    if gethui then
+        local ok, h = pcall(gethui)
+        if ok and h then
+            chamHolderCache = h
+            return h
+        end
+    end
+    chamHolderCache = LP:FindFirstChild("PlayerGui") or LP
+    return chamHolderCache
+end
+
+function F.chams_off()
+    for char, hl in chamByChar do
+        pcall(function()
+            hl:Destroy()
+        end)
+        chamByChar[char] = nil
+    end
+    table.clear(chamSeen)
+end
+
+function F.update_chams(origin)
+    if not CFG.Chams then
+        if next(chamByChar) then
+            F.chams_off()
+        end
+        return
+    end
+    table.clear(chamSeen)
+    local maxd = CFG.ChamsMaxDistance
+    if type(maxd) ~= "number" or maxd < 1 then
+        maxd = 700
+    end
+    local fillT = CFG.ChamsFillTrans
+    if type(fillT) ~= "number" then
+        fillT = 0.55
+    end
+    local outT = CFG.ChamsOutline and (CFG.ChamsOutlineTrans or 0.2) or 1
+    local visCol = CFG.ChamsColorVisible
+    local hidCol = CFG.ChamsColorHidden
+    local nOn = 0
+    local parent = cham_holder()
+    for i = 1, rosterN do
+        if nOn >= CHAMS_CAP then
+            break
+        end
+        local player = roster[i]
+        if player ~= LP then
+            local char = player.Character
+            local hrp = char and F.hrp_of(char)
+            if hrp and hrp.Parent and (not CFG.ChamsEnemyOnly or F.enemy(player)) then
+                local dist = (hrp.Position - origin).Magnitude
+                if dist <= maxd then
+                    local vis = true
+                    local visMax = CFG.ChamsVisMaxDist
+                    if type(visMax) == "number" and dist > visMax then
+                        vis = false
+                    else
+                        vis = F.cached_visible(player, origin, hrp.Position)
+                    end
+                    local col = vis and visCol or hidCol
+                    local hl = chamByChar[char]
+                    if not (hl and hl.Parent) then
+                        hl = Instance.new("Highlight")
+                        hl.Name = "CWChams"
+                        hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                        hl.Adornee = char
+                        hl.Parent = parent
+                        chamByChar[char] = hl
+                    else
+                        if hl.Adornee ~= char then
+                            hl.Adornee = char
+                        end
+                        hl.Enabled = true
+                    end
+                    if hl.FillColor ~= col then
+                        hl.FillColor = col
+                    end
+                    if hl.OutlineColor ~= col then
+                        hl.OutlineColor = col
+                    end
+                    if hl.FillTransparency ~= fillT then
+                        hl.FillTransparency = fillT
+                    end
+                    if hl.OutlineTransparency ~= outT then
+                        hl.OutlineTransparency = outT
+                    end
+                    chamSeen[char] = true
+                    nOn += 1
+                end
+            end
+        end
+    end
+    for char, hl in chamByChar do
+        if not chamSeen[char] then
+            pcall(function()
+                hl:Destroy()
+            end)
+            chamByChar[char] = nil
+        end
     end
 end
 
@@ -3242,15 +3435,18 @@ local function install_hooks()
                     tgt.claimPos = pred
                 end
                 local char = tgt.player and tgt.player.Character
-                local aimRef = tgt.pos or tgt.claimPos or nowPos
-                if CFG.MultiPoint and char and aimRef then
-                    local occluded = tgt.tier ~= 0 or not F.world_visible(origin, aimRef, char)
+                local bonePos = (bone and bone.Parent and bone.Position) or tgt.claimPos or nowPos
+                if CFG.MultiPoint and char and bonePos then
+                    local occluded = tgt.tier == 2
+                    if not occluded then
+                        occluded = not F.world_visible(origin, bonePos, char)
+                    end
                     if occluded then
                         local spoofNow = tgt.spoof
-                        if typeof(spoofNow) == "Vector3" and (spoofNow - origin).Magnitude > 0.05 and F.world_visible(spoofNow, aimRef, char) then
+                        if typeof(spoofNow) == "Vector3" and (spoofNow - origin).Magnitude > 0.05 then
                             tgt.tier = 2
                         else
-                            local mp = F.find_multipoint(origin, aimRef, tgt.bone, true)
+                            local mp = F.find_multipoint(origin, bonePos, tgt.bone, true)
                             if mp then
                                 tgt.spoof = mp
                                 tgt.tier = 2
@@ -3264,10 +3460,9 @@ local function install_hooks()
                     fireOrigin = F.clamp_origin(origin, spoof)
                 end
                 local canSilent = CFG.SilentAim or F.force_hit_on()
-                if canSilent and CFG.VisibleCheck then
-                    local char = tgt.player and tgt.player.Character
-                    local aimAt = tgt.pos or nowPos or tgt.claimPos
-                    canSilent = char ~= nil and aimAt ~= nil and F.world_visible(fireOrigin, aimAt, char)
+                if canSilent and CFG.VisibleCheck and not peek then
+                    local to = (tgt.bone and tgt.bone.Parent and tgt.bone.Position) or nil
+                    canSilent = char ~= nil and to ~= nil and F.world_visible(origin, to, char)
                 end
                 if canSilent then
                     local aimHit = tgt.pos or tgt.claimPos or nowPos
@@ -3436,6 +3631,64 @@ function install_extra_hooks()
             if oka and aimCtrl then
                 AimCtrl = aimCtrl
             end
+            local charFolder = client:FindFirstChild("Character")
+            local camInst = charFolder and charFolder:FindFirstChild("CameraController")
+            if camInst then
+                local okc, CC = pcall(require, camInst)
+                if okc and type(CC) == "table" then
+                    CamCtrl = CC
+                    if type(CC.setFOV) == "function" then
+                        hook_fn(CC, "setFOV", "customZoom", function(orig, mag)
+                            if CFG.CustomZoom then
+                                local aiming = AimCtrl and type(AimCtrl.isAiming) == "function" and AimCtrl.isAiming()
+                                if aiming then
+                                    mag = CFG.CustomZoomMul or 1
+                                end
+                            end
+                            return orig(mag)
+                        end)
+                    end
+                end
+            end
+            if weapon then
+                local okWep, WeaponMod = pcall(require, weapon)
+                if okWep and type(WeaponMod) == "table" and type(WeaponMod.adjustZero) == "function" then
+                    hook_fn(WeaponMod, "adjustZero", "wheelZoomEat", function(orig, self, dir, ...)
+                        if CFG.CustomZoom and CFG.WheelZoom then
+                            local aiming = AimCtrl and type(AimCtrl.isAiming) == "function" and AimCtrl.isAiming()
+                            if aiming then
+                                return
+                            end
+                        end
+                        return orig(self, dir, ...)
+                    end)
+                end
+            end
+            bind(UserInputService.InputChanged:Connect(function(input, processed)
+                if processed or not CFG.CustomZoom or not CFG.WheelZoom then
+                    return
+                end
+                if input.UserInputType ~= Enum.UserInputType.MouseWheel then
+                    return
+                end
+                local aiming = AimCtrl and type(AimCtrl.isAiming) == "function" and AimCtrl.isAiming()
+                if not aiming then
+                    return
+                end
+                local dz = input.Position.Z
+                if dz == 0 then
+                    return
+                end
+                local cur = CFG.CustomZoomMul
+                if type(cur) ~= "number" then
+                    cur = 2
+                end
+                cur = clamp(cur + (dz > 0 and 0.25 or -0.25), 1, 10)
+                CFG.CustomZoomMul = cur
+                if CamCtrl and type(CamCtrl.setFOV) == "function" then
+                    pcall(CamCtrl.setFOV, cur)
+                end
+            end))
             if oka and aimCtrl and aimCtrl.getAlpha then
                 hook_fn(aimCtrl, "getAlpha", "instantAim", function(orig)
                     if CFG.InstantAim then
@@ -4652,6 +4905,29 @@ local function install_movement()
     end))
 
     bind(RunService.Heartbeat:Connect(function(dt)
+        local char, hum, hrp = hum_hrp()
+        if char and hum and hrp and hum.Health > 0 and not CFG.NoClip and not CFG.Fly and not hum.Sit and not hum.SeatPart then
+            if hrp.Massless or hrp.CollisionGroup == "Crew" then
+                local team = LP.Team and LP.Team.Name
+                local group = team == "PACT" and "CharPACT" or (team == "NATO" and "CharNATO" or "Default")
+                for _, d in char:GetDescendants() do
+                    if d:IsA("BasePart") then
+                        if d.CollisionGroup == "Crew" then
+                            d.CollisionGroup = group
+                        end
+                        if d.Massless then
+                            d.Massless = false
+                        end
+                    end
+                end
+                if not hrp.CanCollide then
+                    hrp.CanCollide = true
+                end
+                if hum:GetState() == Enum.HumanoidStateType.Physics then
+                    hum:ChangeState(Enum.HumanoidStateType.Running)
+                end
+            end
+        end
         if not (CFG.Fly or CFG.Speed or CFG.NoClip) then
             return
         end
@@ -4741,6 +5017,9 @@ local function unload()
     if F.stealer_off then
         F.stealer_off()
     end
+    if F.chams_off then
+        F.chams_off()
+    end
     if F.mv_off then
         F.mv_off()
     end
@@ -4787,16 +5066,18 @@ local function install_staff_detect()
     F.staff_running = true
     F.staffWarnUntil = 0
     local warnText = nil
-    if Drawing and Drawing.new then
-        warnText = Drawing.new("Text")
-        warnText.Center = true
-        warnText.Outline = true
-        warnText.Size = 32
-        warnText.Color = Color3.fromRGB(255, 45, 45)
-        warnText.Text = "STAFF DETECTED!"
-        warnText.ZIndex = 80
-        warnText.Visible = false
-    end
+    pcall(function()
+        if Drawing and Drawing.new then
+            warnText = Drawing.new("Text")
+            warnText.Center = true
+            warnText.Outline = true
+            warnText.Size = 32
+            warnText.Color = Color3.fromRGB(255, 45, 45)
+            warnText.Text = "STAFF DETECTED!"
+            warnText.ZIndex = 80
+            warnText.Visible = false
+        end
+    end)
     F.staff_warn_free = function()
         F.staff_running = false
         F.staffWarnUntil = 0
@@ -4809,6 +5090,27 @@ local function install_staff_detect()
         end
     end
 
+    local pendingNotify = {}
+    local function staff_notify(name)
+        if not CFG.StaffNotify then
+            return
+        end
+        if F.ui_notify then
+            F.ui_notify("Staff Detect", name, true)
+            return
+        end
+        pendingNotify[#pendingNotify + 1] = name
+    end
+    F.staff_flush_notify = function()
+        if not F.ui_notify then
+            return
+        end
+        for i = 1, #pendingNotify do
+            F.ui_notify("Staff Detect", pendingNotify[i], true)
+        end
+        table.clear(pendingNotify)
+    end
+
     local function staff_hit(plr)
         if not CFG.StaffDetect or not plr or plr == LP then
             return
@@ -4817,9 +5119,7 @@ local function install_staff_detect()
         local first = not alerted[uid]
         alerted[uid] = true
         if first then
-            if CFG.StaffNotify and F.ui_notify then
-                F.ui_notify("Staff Detect", plr.Name)
-            end
+            staff_notify(plr.Name)
             if CFG.StaffWarning then
                 F.staffWarnUntil = clock() + 8
             end
@@ -4839,26 +5139,40 @@ local function install_staff_detect()
         return pg and pg:FindFirstChild("PrivateAttributes")
     end
 
+    local function role_of(plr)
+        local pa = private_attrs()
+        local uid = plr and plr.UserId
+        local role, key
+        if pa and uid then
+            key = "Role_" .. tostring(uid)
+            role = pa:GetAttribute(key)
+            if not role and type(uid) == "number" and uid < 0 then
+                key = "Role_n" .. tostring(-uid)
+                role = pa:GetAttribute(key)
+            end
+        end
+        local old = plr and plr:GetAttribute("ControlPanelRole")
+        return role, key, old
+    end
+
     local function is_staff(plr)
         if not plr or plr == LP then
             return false
         end
-        local pa = private_attrs()
-        if pa then
-            local role = pa:GetAttribute("Role_" .. tostring(plr.UserId))
-            if STAFF_ROLES[role] then
-                return true
-            end
-        end
-        local old = plr:GetAttribute("ControlPanelRole")
-        if STAFF_ROLES[old] then
+        local role, _, old = role_of(plr)
+        if STAFF_ROLES[role] or STAFF_ROLES[old] then
             return true
         end
         return false
     end
 
+    local rankAt = {}
+    local rankPending = {}
     local function check_player(plr)
         if kicked or not CFG.StaffDetect or not plr or plr == LP then
+            return
+        end
+        if not plr.Parent then
             return
         end
         if is_staff(plr) then
@@ -4866,25 +5180,40 @@ local function install_staff_detect()
             return
         end
         local uid = plr.UserId
-        local cached = rankCache[uid]
-        if cached == true then
+        if rankCache[uid] == true then
             staff_hit(plr)
             return
         end
-        if cached == false then
+        if rankPending[uid] then
             return
         end
-        rankCache[uid] = false
+        local now = clock()
+        local last = rankAt[uid]
+        local waitFor = 90
+        if rankCache[uid] ~= false then
+            waitFor = last and (now - last < 45) and 8 or 30
+        end
+        if last and now - last < waitFor then
+            return
+        end
+        rankAt[uid] = now
+        rankPending[uid] = true
         task.spawn(function()
-            local ok, rank = pcall(plr.GetRankInGroup, plr, STAFF_GROUP)
-            if not ok then
-                rankCache[uid] = nil
+            local ok, rank = pcall(function()
+                return plr:GetRankInGroup(STAFF_GROUP)
+            end)
+            rankPending[uid] = nil
+            if not ok or type(rank) ~= "number" then
+                rankAt[uid] = now - 6
                 return
             end
-            local staff = type(rank) == "number" and rank >= STAFF_RANK
-            rankCache[uid] = staff == true
-            if staff then
+            if rank >= STAFF_RANK then
+                rankCache[uid] = true
                 staff_hit(plr)
+            elseif rank > 0 then
+                rankCache[uid] = false
+            else
+                rankCache[uid] = nil
             end
         end)
     end
@@ -4893,42 +5222,76 @@ local function install_staff_detect()
         if kicked or not CFG.StaffDetect then
             return
         end
-        local list = Players:GetPlayers()
-        for i = 1, #list do
-            check_player(list[i])
+        for i = 1, rosterN do
+            check_player(roster[i])
         end
     end
 
-    bind(Players.PlayerAdded:Connect(function(plr)
-        task.defer(check_player, plr)
-    end))
+    local function watch_join(plr)
+        if not plr or plr == LP then
+            return
+        end
+        check_player(plr)
+        task.delay(2, check_player, plr)
+        task.delay(8, check_player, plr)
+        task.delay(20, check_player, plr)
+    end
+
+    bind(Players.PlayerAdded:Connect(watch_join))
     do
         local list = Players:GetPlayers()
         for i = 1, #list do
-            task.defer(check_player, list[i])
+            task.defer(watch_join, list[i])
         end
     end
-    task.spawn(function()
-        local pg = LP:WaitForChild("PlayerGui", 20)
-        local pa = pg and pg:WaitForChild("PrivateAttributes", 20)
+    local paHooked
+    local function hook_pa(pa)
         if not (pa and F.staff_running) then
             return
         end
+        if paHooked == pa then
+            return
+        end
+        paHooked = pa
         bind(pa.AttributeChanged:Connect(function(attr)
             if type(attr) ~= "string" or string.sub(attr, 1, 5) ~= "Role_" then
                 return
             end
-            local uid = tonumber(string.sub(attr, 6))
+            local rest = string.sub(attr, 6)
+            if string.sub(rest, 1, 1) == "n" then
+                rest = string.sub(rest, 2)
+            end
+            local uid = tonumber(rest)
             local plr = uid and Players:GetPlayerByUserId(uid)
             if plr then
                 check_player(plr)
+            else
+                scan()
             end
         end))
         scan()
+    end
+    task.spawn(function()
+        local pg = LP:FindFirstChild("PlayerGui") or LP:WaitForChild("PlayerGui", 20)
+        if not pg then
+            return
+        end
+        local pa = pg:FindFirstChild("PrivateAttributes")
+        if pa then
+            hook_pa(pa)
+            return
+        end
+        bind(pg.ChildAdded:Connect(function(ch)
+            if ch.Name == "PrivateAttributes" then
+                hook_pa(ch)
+            end
+        end))
+        pa = pg:WaitForChild("PrivateAttributes", 30)
+        hook_pa(pa)
     end)
     task.spawn(function()
         while F.staff_running do
-            task.wait(1.5)
+            task.wait(2)
             scan()
         end
     end)
@@ -5065,6 +5428,7 @@ bind(RunService.RenderStepped:Connect(function(dt)
             espHidden = true
         end
     end
+    F.update_chams(muzzlePos)
 
     local pickEvery = CFG.PickRate or 0
     if CFG.SilentAim and (pickEvery <= 0 or now - lastPickAt >= pickEvery) then
@@ -5090,12 +5454,15 @@ local function buildUI(ctx)
     task.defer(function()
         uiReady = true
     end)
-    local function notify(title, body)
-        if uiReady then
+    local function notify(title, body, force)
+        if uiReady or force then
             pcall(ctx.notify, title, body)
         end
     end
     F.ui_notify = notify
+    if F.staff_flush_notify then
+        F.staff_flush_notify()
+    end
     local function disc(section, text)
         section:SubLabel({ Text = text })
     end
@@ -5774,6 +6141,47 @@ local function buildUI(ctx)
         CFG.AlwaysAct = v
     end)
 
+    local gmZ = GunMods:Section({ Side = "Left" })
+    gmZ:Header({ Name = "Custom Zoom" })
+    feature(gmZ, {
+        Title = "Custom Zoom",
+        Flag = "CW_CustomZoom",
+        Desc = "Sets ADS zoom from 1x to 10x.",
+        get = function()
+            return CFG.CustomZoom
+        end,
+        set = function(v)
+            CFG.CustomZoom = v
+            if v then
+                apply_custom_zoom()
+            elseif CamCtrl and type(CamCtrl.resetFOV) == "function" then
+                local aiming = AimCtrl and type(AimCtrl.isAiming) == "function" and AimCtrl.isAiming()
+                if not aiming then
+                    pcall(CamCtrl.resetFOV)
+                end
+            end
+        end,
+    })
+    slider(gmZ, {
+        Name = "Zoom",
+        Flag = "CW_CustomZoomMul",
+        Default = CFG.CustomZoomMul,
+        Min = 1,
+        Max = 10,
+        Precision = 2,
+        Suffix = "x",
+        Desc = "ADS magnification.",
+        Callback = function(v)
+            CFG.CustomZoomMul = v
+            apply_custom_zoom()
+        end,
+    })
+    boolToggle(gmZ, "Wheel Zoom", "CW_WheelZoom", function()
+        return CFG.WheelZoom
+    end, function(v)
+        CFG.WheelZoom = v
+    end, "Scroll the mouse wheel while aiming to change zoom.")
+
     local ad = Movement:Section({ Side = "Left" })
     ad:Header({ Name = "Fly" })
     feature(ad, {
@@ -6038,6 +6446,18 @@ local function buildUI(ctx)
     end, function(v)
         CFG.EspVisibleCheck = v
     end)
+    slider(es, {
+        Name = "Vis Check Distance",
+        Flag = "CW_EspVisMax",
+        Default = CFG.EspVisMaxDist,
+        Min = 50,
+        Max = 2000,
+        Suffix = " stds",
+        Desc = "Skip vis check past this range.",
+        Callback = function(v)
+            CFG.EspVisMaxDist = v
+        end,
+    })
     boolToggle(es, "Smooth", "CW_EspSmooth", function()
         return CFG.EspSmooth
     end, function(v)
@@ -6108,6 +6528,97 @@ local function buildUI(ctx)
             end
         end,
     }, ctx.flag("CW_EspHpLo"))
+
+    local chm = Visuals:Section({ Side = "Right" })
+    chm:Header({ Name = "Chams" })
+    feature(chm, {
+        Title = "Chams",
+        Flag = "CW_Chams",
+        Desc = "Highlights players through walls.",
+        get = function()
+            return CFG.Chams
+        end,
+        set = function(v)
+            CFG.Chams = v
+            if not v and F.chams_off then
+                F.chams_off()
+            end
+        end,
+    })
+    boolToggle(chm, "Enemy Only", "CW_ChamsEnemy", function()
+        return CFG.ChamsEnemyOnly
+    end, function(v)
+        CFG.ChamsEnemyOnly = v
+    end)
+    boolToggle(chm, "Outline", "CW_ChamsOutline", function()
+        return CFG.ChamsOutline
+    end, function(v)
+        CFG.ChamsOutline = v
+    end)
+    slider(chm, {
+        Name = "Fill Transparency",
+        Flag = "CW_ChamsFillT",
+        Default = CFG.ChamsFillTrans,
+        Min = 0,
+        Max = 1,
+        Precision = 2,
+        Desc = "How see-through the fill is.",
+        Callback = function(v)
+            CFG.ChamsFillTrans = v
+        end,
+    })
+    slider(chm, {
+        Name = "Outline Transparency",
+        Flag = "CW_ChamsOutT",
+        Default = CFG.ChamsOutlineTrans,
+        Min = 0,
+        Max = 1,
+        Precision = 2,
+        Callback = function(v)
+            CFG.ChamsOutlineTrans = v
+        end,
+    })
+    slider(chm, {
+        Name = "Max Distance",
+        Flag = "CW_ChamsMax",
+        Default = CFG.ChamsMaxDistance,
+        Min = 50,
+        Max = 2000,
+        Suffix = " stds",
+        Callback = function(v)
+            CFG.ChamsMaxDistance = v
+        end,
+    })
+    slider(chm, {
+        Name = "Vis Check Distance",
+        Flag = "CW_ChamsVisMax",
+        Default = CFG.ChamsVisMaxDist,
+        Min = 50,
+        Max = 2000,
+        Suffix = " stds",
+        Desc = "Skip vis check past this range.",
+        Callback = function(v)
+            CFG.ChamsVisMaxDist = v
+        end,
+    })
+    chm:Colorpicker({
+        Name = "Visible",
+        Default = CFG.ChamsColorVisible,
+        Callback = function(c)
+            if typeof(c) == "Color3" then
+                CFG.ChamsColorVisible = c
+            end
+        end,
+    }, ctx.flag("CW_ChamsVisCol"))
+    chm:Colorpicker({
+        Name = "Hidden",
+        Default = CFG.ChamsColorHidden,
+        Callback = function(c)
+            if typeof(c) == "Color3" then
+                CFG.ChamsColorHidden = c
+            end
+        end,
+    }, ctx.flag("CW_ChamsHidCol"))
 
     local fx = Visuals:Section({ Side = "Right" })
     fx:Header({ Name = "Bullet Tracer" })
