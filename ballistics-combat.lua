@@ -305,7 +305,7 @@ local enemyOf = {}
 local charRefs = {}
 local aliveFrame = 0
 local vpX, vpY = 0, 0
-local fovCacheR, fovCacheVX, fovCacheVY, fovCacheFov, fovCacheSa = -1, -1, -1, -1, -1
+local fovCache = { r = -1, vx = -1, vy = -1, fov = -1, sa = -1 }
 local candPool = {}
 for i = 1, 48 do
     candPool[i] = { player = nil, char = nil, bone = nil, pos = ZERO3, dist = 0 }
@@ -335,18 +335,19 @@ local saFireTgt = {
 local FOOT_NAMES = { "LeftFoot", "RightFoot", "Left Leg", "Right Leg", "LeftLowerLeg", "RightLowerLeg" }
 local visChars = {}
 local visIgnoreN = 0
-local visBuiltChar, visBuiltTool, visBuiltFolder, visBuiltCam
-local visMyChar, visIgnoreFolder, visCam, visTool
+local visF = { myChar = nil, ignoreFolder = nil, cam = nil, tool = nil, builtChar = nil, builtTool = nil, builtFolder = nil, builtCam = nil }
 
-local COL_TIER0 = Color3.fromRGB(120, 255, 120)
-local COL_TIER1 = Color3.fromRGB(255, 220, 80)
-local COL_TIER2 = Color3.fromRGB(120, 180, 255)
-local COL_TIERX = Color3.fromRGB(255, 90, 90)
-local COL_SPOOF_A = Color3.fromRGB(255, 200, 60)
-local COL_SPOOF_B = Color3.fromRGB(120, 255, 180)
-local COL_WHITE = Color3.new(1, 1, 1)
-local UP3 = V3(0, 1, 0)
-local X3 = V3(1, 0, 0)
+local COL = {
+    TIER0 = Color3.fromRGB(120, 255, 120),
+    TIER1 = Color3.fromRGB(255, 220, 80),
+    TIER2 = Color3.fromRGB(120, 180, 255),
+    TIERX = Color3.fromRGB(255, 90, 90),
+    SPOOF_A = Color3.fromRGB(255, 200, 60),
+    SPOOF_B = Color3.fromRGB(120, 255, 180),
+    WHITE = Color3.new(1, 1, 1),
+    UP3 = V3(0, 1, 0),
+    X3 = V3(1, 0, 0),
+}
 
 local STATE_COLOR = {
     Aim = Color3.fromRGB(120, 200, 255),
@@ -1042,7 +1043,7 @@ visParams.IgnoreWater = true
 local visIgnore = {}
 
 local function vis_filter_dirty()
-    if visBuiltChar ~= visMyChar or visBuiltTool ~= visTool or visBuiltFolder ~= visIgnoreFolder or visBuiltCam ~= visCam then
+    if visF.builtChar ~= visF.myChar or visF.builtTool ~= visF.tool or visF.builtFolder ~= visF.ignoreFolder or visF.builtCam ~= visF.cam then
         return true
     end
     for i = 1, rosterN do
@@ -1056,21 +1057,21 @@ end
 
 local function rebuild_vis_filter()
     local n = 0
-    if visMyChar then
+    if visF.myChar then
         n += 1
-        visIgnore[n] = visMyChar
+        visIgnore[n] = visF.myChar
     end
-    if visIgnoreFolder then
+    if visF.ignoreFolder then
         n += 1
-        visIgnore[n] = visIgnoreFolder
+        visIgnore[n] = visF.ignoreFolder
     end
-    if visCam then
+    if visF.cam then
         n += 1
-        visIgnore[n] = visCam
+        visIgnore[n] = visF.cam
     end
-    if visTool then
+    if visF.tool then
         n += 1
-        visIgnore[n] = visTool
+        visIgnore[n] = visF.tool
     end
     for i = 1, rosterN do
         local char = roster[i].Character
@@ -1087,7 +1088,7 @@ local function rebuild_vis_filter()
         visIgnore[i] = nil
     end
     visIgnoreN = n
-    visBuiltChar, visBuiltTool, visBuiltFolder, visBuiltCam = visMyChar, visTool, visIgnoreFolder, visCam
+    visF.builtChar, visF.builtTool, visF.builtFolder, visF.builtCam = visF.myChar, visF.tool, visF.ignoreFolder, visF.cam
     visParams.FilterDescendantsInstances = table.clone(visIgnore)
 end
 
@@ -1096,13 +1097,13 @@ function F.prep_frame(fromFire)
         aliveFrame += 1
     end
     Cam = Workspace.CurrentCamera
-    visMyChar = LP.Character
-    if not visIgnoreFolder or not visIgnoreFolder.Parent then
-        visIgnoreFolder = Workspace:FindFirstChild("Ignore")
+    visF.myChar = LP.Character
+    if not visF.ignoreFolder or not visF.ignoreFolder.Parent then
+        visF.ignoreFolder = Workspace:FindFirstChild("Ignore")
     end
-    visCam = Cam
-    if not (visTool and visTool.Parent == visMyChar) then
-        visTool = visMyChar and visMyChar:FindFirstChildWhichIsA("Tool")
+    visF.cam = Cam
+    if not (visF.tool and visF.tool.Parent == visF.myChar) then
+        visF.tool = visF.myChar and visF.myChar:FindFirstChildWhichIsA("Tool")
     end
     local teamName = LP.Team and LP.Team.Name
     local rayGroup = teamName == "PACT" and "RayPACT" or (teamName == "NATO" and "RayNATO" or "RayNeutral")
@@ -1120,7 +1121,7 @@ function F.prep_frame(fromFire)
     end
 end
 
-local visMemoFrame, visMemoChar, visMemoFx, visMemoFy, visMemoFz, visMemoTx, visMemoTy, visMemoTz, visMemoRes
+local visMemo = { frame = 0, char = nil, fx = 0, fy = 0, fz = 0, tx = 0, ty = 0, tz = 0, res = false }
 
 local function vis_pierce_inst(inst)
     if typeof(inst) ~= "Instance" then
@@ -1141,18 +1142,18 @@ local function vis_pierce_inst(inst)
 end
 
 function F.world_visible(fromPos, toPos, char)
-    if visMemoFrame == aliveFrame and visMemoChar == char then
-        if visMemoFx == fromPos.X and visMemoFy == fromPos.Y and visMemoFz == fromPos.Z
-            and visMemoTx == toPos.X and visMemoTy == toPos.Y and visMemoTz == toPos.Z then
-            return visMemoRes
+    if visMemo.frame == aliveFrame and visMemo.char == char then
+        if visMemo.fx == fromPos.X and visMemo.fy == fromPos.Y and visMemo.fz == fromPos.Z
+            and visMemo.tx == toPos.X and visMemo.ty == toPos.Y and visMemo.tz == toPos.Z then
+            return visMemo.res
         end
     end
     local dir = toPos - fromPos
     local mag = dir.Magnitude
     if mag < 0.05 then
-        visMemoFrame, visMemoChar, visMemoRes = aliveFrame, char, true
-        visMemoFx, visMemoFy, visMemoFz = fromPos.X, fromPos.Y, fromPos.Z
-        visMemoTx, visMemoTy, visMemoTz = toPos.X, toPos.Y, toPos.Z
+        visMemo.frame, visMemo.char, visMemo.res = aliveFrame, char, true
+        visMemo.fx, visMemo.fy, visMemo.fz = fromPos.X, fromPos.Y, fromPos.Z
+        visMemo.tx, visMemo.ty, visMemo.tz = toPos.X, toPos.Y, toPos.Z
         return true
     end
     local from = fromPos
@@ -1181,9 +1182,9 @@ function F.world_visible(fromPos, toPos, char)
         from = hit.Position + unit * 0.2
         remain = unit * left
     end
-    visMemoFrame, visMemoChar, visMemoRes = aliveFrame, char, ok
-    visMemoFx, visMemoFy, visMemoFz = fromPos.X, fromPos.Y, fromPos.Z
-    visMemoTx, visMemoTy, visMemoTz = toPos.X, toPos.Y, toPos.Z
+    visMemo.frame, visMemo.char, visMemo.res = aliveFrame, char, ok
+    visMemo.fx, visMemo.fy, visMemo.fz = fromPos.X, fromPos.Y, fromPos.Z
+    visMemo.tx, visMemo.ty, visMemo.tz = toPos.X, toPos.Y, toPos.Z
     return ok
 end
 
@@ -1226,11 +1227,11 @@ end
 
 function F.mp_dirs(cam)
     local cf = cam and cam.CFrame
-    local right = cf and cf.RightVector or X3
-    local look = cf and cf.LookVector or X3
+    local right = cf and cf.RightVector or COL.X3
+    local look = cf and cf.LookVector or COL.X3
     dirScratch[1] = right
     dirScratch[2] = -right
-    dirScratch[3] = UP3
+    dirScratch[3] = COL.UP3
     dirScratch[4] = (right + look).Unit
     dirScratch[5] = (-right + look).Unit
     dirCount = 5
@@ -1546,12 +1547,12 @@ end
 function F.screen_fov_radius()
     local fov = Cam.FieldOfView
     local sa = CFG.SilentAimFOV
-    if vpX == fovCacheVX and vpY == fovCacheVY and fov == fovCacheFov and sa == fovCacheSa then
-        return fovCacheR
+    if vpX == fovCache.vx and vpY == fovCache.vy and fov == fovCache.fov and sa == fovCache.sa then
+        return fovCache.r
     end
-    fovCacheR = F.fov_px(sa)
-    fovCacheVX, fovCacheVY, fovCacheFov, fovCacheSa = vpX, vpY, fov, sa
-    return fovCacheR
+    fovCache.r = F.fov_px(sa)
+    fovCache.vx, fovCache.vy, fovCache.fov, fovCache.sa = vpX, vpY, fov, sa
+    return fovCache.r
 end
 
 function F.is_aiming()
@@ -2976,16 +2977,16 @@ local function tier_color(tier)
         return CFG.AimVisualColor
     end
     if tier == 0 then
-        return COL_TIER0
+        return COL.TIER0
     elseif tier == 1 then
-        return COL_TIER1
+        return COL.TIER1
     elseif tier == 2 then
-        return COL_TIER2
+        return COL.TIER2
     end
-    return COL_TIERX
+    return COL.TIERX
 end
 
-local reticleColor = COL_TIER0
+local reticleColor = COL.TIER0
 local reticleAlpha = 0.95
 
 local function reticle_seg(i, x1, y1, x2, y2, thickness, alpha)
@@ -3103,7 +3104,7 @@ function F.paint_center_mark(style, color, size, gap, thick, op, ox, oy)
     hide_ch()
     local cx, cy = ox or (vpX * 0.5), oy or (vpY * 0.5)
     style = style or "Cross"
-    color = color or COL_WHITE
+    color = color or COL.WHITE
     size = size or 8
     gap = gap or 0
     thick = thick or 1.2
@@ -3163,8 +3164,8 @@ end
 
 function F.muzzle_cframe()
     Cam = Workspace.CurrentCamera
-    local char = visMyChar or LP.Character
-    local tool = visTool or (char and char:FindFirstChildWhichIsA("Tool"))
+    local char = visF.myChar or LP.Character
+    local tool = visF.tool or (char and char:FindFirstChildWhichIsA("Tool"))
     local firstPerson = Cam and (Cam.CFrame.Position - Cam.Focus.Position).Magnitude <= 0.75
     local att = muzzleState.att
     if att and att.Parent and muzzleState.tool == tool and muzzleState.fp == firstPerson then
@@ -3174,7 +3175,7 @@ function F.muzzle_cframe()
         local vm = muzzleState.vm
         if not (vm and vm.Parent) then
             vm = nil
-            local ignore = visIgnoreFolder or Workspace:FindFirstChild("Ignore")
+            local ignore = visF.ignoreFolder or Workspace:FindFirstChild("Ignore")
             if ignore then
                 local children = ignore:GetChildren()
                 for i = 1, #children do
@@ -3411,7 +3412,7 @@ function F.paint_overlay()
     if (CFG.FovCircle or CFG.ShowFOV) and CFG.SilentAim then
         local radius = F.screen_fov_radius()
         local pos = V2(vpX * 0.5, vpY * 0.5)
-        local color = CFG.FovCircleColor or CFG.FOVColor or COL_WHITE
+        local color = CFG.FovCircleColor or CFG.FOVColor or COL.WHITE
         local op = CFG.FovCircleTrans or 0.6
         local thick = CFG.FovCircleThick or 1
         if useDI then
@@ -3436,7 +3437,7 @@ function F.paint_overlay()
     if CFG.Aimbot and CFG.AimbotShowFOV then
         local radius = F.fov_px(CFG.AimbotFOV)
         local pos = V2(vpX * 0.5, vpY * 0.5)
-        local color = CFG.AimbotFovColor or COL_WHITE
+        local color = CFG.AimbotFovColor or COL.WHITE
         local op = CFG.AimbotFovTrans or 0.55
         local thick = CFG.AimbotFovThick or 1
         if useDI then
@@ -3467,8 +3468,8 @@ function F.paint_overlay()
             local spoofed = saTgt.spoof and (saTgt.spoof - muzzlePos).Magnitude > 0.05
             if useDI then
                 if spoofed then
-                    paint_world_line(muzzlePos, saTgt.spoof, COL_SPOOF_A, 1.4, 0.3)
-                    paint_world_line(saTgt.spoof, saTgt.pos, COL_SPOOF_B, 2.2, 0.2)
+                    paint_world_line(muzzlePos, saTgt.spoof, COL.SPOOF_A, 1.4, 0.3)
+                    paint_world_line(saTgt.spoof, saTgt.pos, COL.SPOOF_B, 2.2, 0.2)
                 else
                     paint_world_line(muzzlePos, saTgt.pos, CFG.MuzzleLineColor, CFG.MuzzleLineThick, CFG.MuzzleLineTrans or 0.15)
                 end
@@ -3491,7 +3492,7 @@ function F.paint_overlay()
                     local sFront = sScreen.Z > 0
                     if mFront and sFront then
                         spoofLineA.Visible = true
-                        spoofLineA.Color = COL_SPOOF_A
+                        spoofLineA.Color = COL.SPOOF_A
                         spoofLineA.Thickness = 1.4
                         spoofLineA.Transparency = 0.7
                         spoofLineA.From = V2(mScreen.X, mScreen.Y)
@@ -3499,7 +3500,7 @@ function F.paint_overlay()
                     end
                     if sFront and tFront then
                         spoofLineB.Visible = true
-                        spoofLineB.Color = COL_SPOOF_B
+                        spoofLineB.Color = COL.SPOOF_B
                         spoofLineB.Thickness = 2.2
                         spoofLineB.Transparency = 0.8
                         spoofLineB.From = V2(sScreen.X, sScreen.Y)
@@ -5989,7 +5990,7 @@ bind(RunService.RenderStepped:Connect(function(dt)
     end
 end))
 
-local function buildUI(ctx)
+function F.buildUI(ctx)
     F.maclibUi = true
     local uiReady = false
     task.defer(function()
@@ -7695,7 +7696,7 @@ getgenv().CWCombat = {
     config = CFG,
     unload = unload,
     pick = F.pick_silent_target,
-    buildUI = buildUI,
+    buildUI = F.buildUI,
 }
 
 
@@ -7704,7 +7705,7 @@ return {
     Init = function(UI, Core, notifyFn, ctx)
         ctx = ctx or (UI and UI.ctx)
         if type(ctx) == "table" and ctx.tabs then
-            buildUI(ctx)
+            F.buildUI(ctx)
         end
     end,
 }
