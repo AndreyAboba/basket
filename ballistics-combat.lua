@@ -86,15 +86,19 @@ local CFG = {
     LegitSpread = 0.35,
     LegitBoneJitter = 0.32,
 
-    ForceHit = false,
+    ForceHit = true,
     InstantHit = true,
-    InstantHitMul = 1.3,
+    InstantHitMul = 2.4,
     SmartInstant = true,
     ForceHitDelay = 0,
     SmartInstantRefDist = 400,
     SmartInstantRefDelay = 0.08,
     SmartInstantMaxDelay = 0.9,
     ForceHitPart = "auto",
+    ForceHitMargin = 2.5,
+    AutoHeal = false,
+    AutoHealRadius = 7,
+    AutoRecon = false,
 
     MultiPoint = true,
     SpoofOrigin = true,
@@ -284,6 +288,14 @@ local lastShotFrom = nil
 local lastVolleyAt = 0
 local lastVolleySpeed = 900
 local lastVolleyDrag = 0
+local lastSupport = {
+    at = 0,
+    heal = nil,
+    reconUntil = 0,
+    reconHooked = false,
+    medicRE = nil,
+    binRE = nil,
+}
 local lastHitSoundAt = 0
 local dirScratch = {}
 local dirCount = 4
@@ -492,6 +504,208 @@ function F.part_name_for_shot()
         return "Head"
     end
     return "Torso"
+end
+
+function F.force_part_name()
+    local mode = CFG.ForceHitPart or "auto"
+    if mode == "Torso" then
+        return "Torso"
+    end
+    if mode == "auto" then
+        return F.part_name_for_shot()
+    end
+    local hc = CFG.HeadChance
+    if type(hc) ~= "number" then
+        hc = 50
+    end
+    hc = clamp(hc, 0, 100)
+    if hc >= 100 then
+        return "Head"
+    end
+    if hc <= 0 then
+        return "Torso"
+    end
+    if math.random() * 100 < hc then
+        return "Head"
+    end
+    return "Torso"
+end
+
+function F.seg_point_dist(p, a, b)
+    local ab = b - a
+    local den = ab:Dot(ab)
+    if den < 1e-6 then
+        return (p - a).Magnitude
+    end
+    local t = math.clamp((p - a):Dot(ab) / den, 0, 1)
+    return (a + ab * t - p).Magnitude
+end
+
+function F.apply_force_hit(impact)
+    if not CFG.ForceHit or type(impact) ~= "table" then
+        return
+    end
+    local inst = impact.Instance
+    local model = inst and inst:FindFirstAncestorOfClass("Model")
+    local victim = model and Players:GetPlayerFromCharacter(model)
+    if victim == LP then
+        return
+    end
+    if victim and LP.Team and victim.Team and LP.Team == victim.Team then
+        return
+    end
+    if not victim then
+        local from = lastShotFrom
+        local pos = impact.Position
+        if typeof(pos) ~= "Vector3" and inst then
+            pos = inst.Position
+        end
+        if typeof(from) ~= "Vector3" or typeof(pos) ~= "Vector3" then
+            return
+        end
+        local margin = CFG.ForceHitMargin or 2.5
+        if type(margin) ~= "number" or margin <= 0 then
+            return
+        end
+        local best, bestD = nil, margin
+        for ri = 1, rosterN do
+            local pl = roster[ri]
+            if F.enemy(pl) then
+                local bone = F.ref_bone(pl, "Head") or F.ref_bone(pl, "Torso")
+                if bone then
+                    local d = F.seg_point_dist(bone.Position, from, pos)
+                    if d < bestD then
+                        best, bestD = pl, d
+                    end
+                end
+            end
+        end
+        victim = best
+    end
+    if not victim then
+        return
+    end
+    local part = F.ref_bone(victim, F.force_part_name())
+    if part then
+        impact.Instance = part
+        impact.Position = part.Position
+    end
+end
+
+function F.class_type()
+    local a = LP:GetAttribute("ClassType")
+    if type(a) == "string" and a ~= "" then
+        return a
+    end
+    local v = cv_val(LP.Character, "ClassType")
+    if type(v) == "string" then
+        return v
+    end
+    return nil
+end
+
+function F.ensure_support_remotes()
+    local rem = ReplicatedStorage:FindFirstChild("Remotes")
+    if not rem then
+        return
+    end
+    if not lastSupport.medicRE then
+        lastSupport.medicRE = rem:FindFirstChild("MedicBag")
+    end
+    if not lastSupport.binRE then
+        lastSupport.binRE = rem:FindFirstChild("Binoculars")
+    end
+    if lastSupport.binRE and not lastSupport.reconHooked then
+        lastSupport.reconHooked = true
+        lastSupport.binRE.OnClientEvent:Connect(function(sec)
+            if type(sec) == "number" and sec > 0 then
+                lastSupport.reconUntil = clock() + sec
+            end
+        end)
+    end
+end
+
+function F.stop_heal()
+    if lastSupport.heal and lastSupport.medicRE then
+        pcall(function()
+            lastSupport.medicRE:FireServer(lastSupport.heal, false)
+        end)
+    end
+    lastSupport.heal = nil
+end
+
+function F.tick_support()
+    local now = clock()
+    if now - lastSupport.at < 0.3 then
+        return
+    end
+    lastSupport.at = now
+    F.ensure_support_remotes()
+    local hrp = F.hrp_of(LP.Character)
+    if CFG.AutoHeal and lastSupport.medicRE then
+        local ct = F.class_type()
+        if ct == "Medic" and hrp then
+            local radius = CFG.AutoHealRadius or 7
+            local best, bestD
+            local list = Players:GetPlayers()
+            for i = 1, #list do
+                local pl = list[i]
+                if pl ~= LP and LP.Team and pl.Team and LP.Team == pl.Team and F.alive(pl) then
+                    local r = F.char_ref(pl)
+                    local th = r.hrp
+                    if th then
+                        local d = (th.Position - hrp.Position).Magnitude
+                        if d <= radius and (not bestD or d < bestD) then
+                            best, bestD = r.char, d
+                        end
+                    end
+                end
+            end
+            if best then
+                if lastSupport.heal ~= best then
+                    F.stop_heal()
+                    lastSupport.heal = best
+                    pcall(function()
+                        lastSupport.medicRE:FireServer(best, true)
+                    end)
+                end
+            else
+                F.stop_heal()
+            end
+        else
+            F.stop_heal()
+        end
+    else
+        F.stop_heal()
+    end
+    if CFG.AutoRecon and lastSupport.binRE and now >= lastSupport.reconUntil and Cam and hrp then
+        local ct = F.class_type()
+        if ct == "Recon" then
+            local best, bestD
+            for ri = 1, rosterN do
+                local pl = roster[ri]
+                if F.enemy(pl) then
+                    local r = F.char_ref(pl)
+                    local th = r.hrp or r.head
+                    if th then
+                        local d = (th.Position - hrp.Position).Magnitude
+                        if not bestD or d < bestD then
+                            best, bestD = th, d
+                        end
+                    end
+                end
+            end
+            if best then
+                local dir = best.Position - Cam.CFrame.Position
+                if dir.Magnitude > 0.05 then
+                    lastSupport.reconUntil = now + 1.2
+                    pcall(function()
+                        lastSupport.binRE:FireServer("Spotting", dir.Unit)
+                    end)
+                end
+            end
+        end
+    end
 end
 
 local LIMB_HP = { "Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg" }
@@ -1235,29 +1449,84 @@ function F.ballistic_dir(origin, target, toolOrName, muzzleIdx, bulletIdx, noQua
     end
     local speed, drag = F.weapon_profile(toolOrName, muzzleIdx, bulletIdx)
     local g = Workspace.Gravity
-    local t = F.flight_time(dist, speed, drag)
-    if Trajectory and type(Trajectory.new) == "function" and type(Trajectory.GetTimeForDistance) == "function" then
-        local okT, traj = pcall(Trajectory.new, {
-            Origin = origin,
-            Direction = delta,
+    local hDist = math.sqrt(delta.X * delta.X + delta.Z * delta.Z)
+    if hDist < 0.08 then
+        return delta.Unit
+    end
+    local dy = delta.Y
+    local traj
+    if Trajectory and type(Trajectory.new) == "function" then
+        local okT, t0 = pcall(Trajectory.new, {
+            Origin = ZERO3,
+            Direction = V3(0, 0, -1),
             MuzzleSpeed = speed,
             K = drag,
             Gravity = g,
         })
-        if okT and traj then
-            local okD, tt = pcall(Trajectory.GetTimeForDistance, traj, dist)
-            if okD and type(tt) == "number" then
-                t = tt
-            end
+        if okT then
+            traj = t0
         end
     end
-    local drop = 0.5 * g * t * t
-    local aim = target + V3(0, drop, 0)
-    local dir = (aim - origin)
-    if dir.Magnitude < 1e-4 then
-        return delta.Unit
+    local function timeFor(pathLen)
+        if traj and type(Trajectory.GetTimeForDistance) == "function" then
+            local okD, tt = pcall(Trajectory.GetTimeForDistance, traj, pathLen)
+            if okD and type(tt) == "number" then
+                return tt
+            end
+        end
+        return F.flight_time(pathLen, speed, drag)
     end
-    dir = dir.Unit
+    local function residual(theta)
+        local c = math.cos(theta)
+        if c < 0.05 then
+            return nil
+        end
+        local pathLen = hDist / c
+        local t = timeFor(pathLen)
+        if type(t) ~= "number" then
+            return nil
+        end
+        return math.sin(theta) * pathLen - 0.5 * g * t * t - dy
+    end
+    local lo, hi = -0.55, 1.22
+    local found
+    local prevTh, prevR = lo, residual(lo)
+    for i = 1, 48 do
+        local th = lo + (hi - lo) * (i / 48)
+        local r = residual(th)
+        if type(r) == "number" and type(prevR) == "number" and prevR < 0 and r >= 0 then
+            local a, b = prevTh, th
+            for _ = 1, 20 do
+                local m = 0.5 * (a + b)
+                local rm = residual(m)
+                if type(rm) == "number" and rm >= 0 then
+                    b = m
+                else
+                    a = m
+                end
+            end
+            found = 0.5 * (a + b)
+            break
+        end
+        if type(r) == "number" then
+            prevTh, prevR = th, r
+        end
+    end
+    local dir
+    if found then
+        local flat = V3(delta.X / hDist, 0, delta.Z / hDist)
+        dir = flat * math.cos(found) + V3(0, math.sin(found), 0)
+        if dir.Magnitude > 1e-4 then
+            dir = dir.Unit
+        else
+            dir = delta.Unit
+        end
+    else
+        local t = timeFor(dist)
+        local drop = 0.5 * g * t * t
+        dir = target + V3(0, drop, 0) - origin
+        dir = dir.Magnitude > 1e-4 and dir.Unit or delta.Unit
+    end
     if not noQuant and ShotCodec and ShotCodec.quantizeDirection then
         dir = ShotCodec.quantizeDirection(dir)
     end
@@ -3604,6 +3873,7 @@ local function install_hooks()
                 return
             end
             if type(impact) == "table" then
+                F.apply_force_hit(impact)
                 local inst = impact.Instance
                 local model = inst and inst:FindFirstAncestorOfClass("Model")
                 local victim = model and Players:GetPlayerFromCharacter(model)
@@ -3629,11 +3899,11 @@ local function install_hooks()
                         end
                         local tReal = F.flight_time(dist, lastVolleySpeed, lastVolleyDrag)
                         local elapsed = clock() - lastVolleyAt
-                        local wait = tReal - elapsed
-                        if wait > 1.25 then
-                            wait = 1.25
+                        local wait = (tReal - elapsed) * 0.2
+                        if wait > 0.12 then
+                            wait = 0.12
                         end
-                        if wait > 0.03 then
+                        if wait > 0.02 then
                             task.delay(wait, function()
                                 if type(impact) ~= "table" then
                                     return
@@ -3683,7 +3953,7 @@ local function install_hooks()
         local fireOrigin = origin
         local peek = false
         local isTurret = type(tool) == "string"
-        if rolled and (CFG.SilentAim or F.force_hit_on()) and (not isTurret or CFG.TurretSA) and type(dirs) == "table" and typeof(origin) == "Vector3" then
+        if rolled and CFG.SilentAim and (not isTurret or CFG.TurretSA) and type(dirs) == "table" and typeof(origin) == "Vector3" then
             F.prep_frame(true)
             local prefer = F.part_name_for_shot()
             local src = F.pick_silent_target(F.shot_origin(origin), CFG.SilentAimMaxDist, F.need_los(), nil, prefer, true)
@@ -3743,7 +4013,7 @@ local function install_hooks()
                 if peek then
                     fireOrigin = F.clamp_origin(origin, spoof)
                 end
-                local canSilent = CFG.SilentAim or F.force_hit_on()
+                local canSilent = CFG.SilentAim
                 if canSilent and CFG.VisibleCheck and not peek then
                     local to = (tgt.bone and tgt.bone.Parent and tgt.bone.Position) or nil
                     canSilent = char ~= nil and to ~= nil and F.world_visible(origin, to, char)
@@ -3777,13 +4047,7 @@ local function install_hooks()
         if type(results) == "table" then
             local mul = 1
             if CFG.InstantHit then
-                mul = CFG.InstantHitMul or 1.3
-            end
-            if CFG.ForceHit then
-                local fm = CFG.InstantHitMul or 1.3
-                if fm > mul then
-                    mul = fm
-                end
+                mul = CFG.InstantHitMul or 2.4
             end
             if mul > 1.01 then
                 for i = 1, #results do
@@ -5178,6 +5442,7 @@ local function install_movement()
     end))
 
     bind(RunService.Heartbeat:Connect(function(dt)
+        F.tick_support()
         local char, hum, hrp = hum_hrp()
         if char and hum and hrp and hum.Health > 0 and not CFG.NoClip and not CFG.Fly and not hum.Sit and not hum.SeatPart then
             if hrp.Massless or hrp.CollisionGroup == "Crew" then
@@ -5289,6 +5554,9 @@ local function unload()
     end
     if F.stealer_off then
         F.stealer_off()
+    end
+    if F.stop_heal then
+        F.stop_heal()
     end
     if F.chams_off then
         F.chams_off()
@@ -5915,7 +6183,28 @@ local function buildUI(ctx)
         return CFG.ForceHit
     end, function(v)
         CFG.ForceHit = v
-    end, "Speeds the same tracer. Does not register a separate hit.")
+    end, "If the bullet hits them or passes close, the hit registers on the selected part.")
+    sa:Dropdown({
+        Name = "Force Hit Part",
+        Options = { "auto", "Head", "Torso" },
+        Default = CFG.ForceHitPart or "auto",
+        Callback = function(v)
+            CFG.ForceHitPart = v
+        end,
+    }, ctx.flag("CW_ForceHitPart"))
+    slider(sa, {
+        Name = "Force Hit Margin",
+        Flag = "CW_ForceMargin",
+        Default = CFG.ForceHitMargin,
+        Min = 0.5,
+        Max = 5,
+        Precision = 1,
+        Suffix = " stds",
+        Desc = "Near-miss distance that still counts.",
+        Callback = function(v)
+            CFG.ForceHitMargin = v
+        end,
+    })
 
     sa:Divider()
     sa:Header({ Name = "Prediction" })
@@ -7340,6 +7629,31 @@ local function buildUI(ctx)
     })
 
     local dbg = Misc:Section({ Side = "Left" })
+    dbg:Header({ Name = "Support" })
+    boolToggle(dbg, "Auto Heal", "CW_AutoHeal", function()
+        return CFG.AutoHeal
+    end, function(v)
+        CFG.AutoHeal = v
+        if not v then
+            F.stop_heal()
+        end
+    end, "Heals the nearest teammate in range when you are a medic.")
+    slider(dbg, {
+        Name = "Heal Radius",
+        Flag = "CW_HealRadius",
+        Default = CFG.AutoHealRadius,
+        Min = 4,
+        Max = 12,
+        Suffix = " stds",
+        Callback = function(v)
+            CFG.AutoHealRadius = v
+        end,
+    })
+    boolToggle(dbg, "Auto Recon", "CW_AutoRecon", function()
+        return CFG.AutoRecon
+    end, function(v)
+        CFG.AutoRecon = v
+    end, "Spots the nearest enemy. Respects cooldown.")
     dbg:Header({ Name = "Staff Detect" })
     feature(dbg, {
         Title = "Staff Detect",
