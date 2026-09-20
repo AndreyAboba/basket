@@ -251,6 +251,8 @@ local fireVolleyKey = nil
 local origSendClaim = nil
 local extraHooksInstalled = false
 local extraHooks = {}
+local recoilHooked = false
+local ensure_recoil
 local ClientFire = nil
 local HitReporter = nil
 local ShotCodec = nil
@@ -3360,6 +3362,92 @@ local function find_named_mod(root, name)
     return nil
 end
 
+local function collect_str_consts(fn, depth)
+    local out = {}
+    if type(fn) ~= "function" then
+        return out
+    end
+    if type(debug.getconstants) == "function" then
+        local ok, consts = pcall(debug.getconstants, fn)
+        if ok and type(consts) == "table" then
+            for _, c in consts do
+                if type(c) == "string" then
+                    out[#out + 1] = c
+                end
+            end
+        end
+    elseif type(debug.getconstant) == "function" then
+        for i = 1, 96 do
+            local ok, c = pcall(debug.getconstant, fn, i)
+            if not ok then
+                break
+            end
+            if type(c) == "string" then
+                out[#out + 1] = c
+            end
+        end
+    end
+    if (depth or 1) > 0 and type(debug.getproto) == "function" then
+        for i = 1, 6 do
+            local ok, proto = pcall(debug.getproto, fn, i)
+            if not ok or type(proto) ~= "function" then
+                break
+            end
+            local inner = collect_str_consts(proto, 0)
+            for j = 1, #inner do
+                out[#out + 1] = inner[j]
+            end
+        end
+    end
+    return out
+end
+
+local function has_str_const(fn, s)
+    local consts = collect_str_consts(fn)
+    for i = 1, #consts do
+        if consts[i] == s then
+            return true
+        end
+    end
+    return false
+end
+
+local function is_volley_fn(fn)
+    return has_str_const(fn, "encodeFire") or has_str_const(fn, "beginDischarge")
+end
+
+local function export_matching(mod, pred)
+    if type(mod) ~= "table" then
+        return nil, nil
+    end
+    for k, v in mod do
+        if type(k) == "string" and type(v) == "function" and pred(v, k) then
+            return v, k
+        end
+    end
+    return nil, nil
+end
+
+local function key_from_caller(mod, caller, pred)
+    if type(mod) ~= "table" or type(caller) ~= "function" then
+        return nil, nil
+    end
+    local consts = collect_str_consts(caller)
+    local hitFn, hitKey, nHit = nil, nil, 0
+    for i = 1, #consts do
+        local s = consts[i]
+        local fn = mod[s]
+        if type(fn) == "function" and (not pred or pred(fn, s)) then
+            nHit += 1
+            hitFn, hitKey = fn, s
+        end
+    end
+    if nHit == 1 then
+        return hitFn, hitKey
+    end
+    return nil, nil
+end
+
 local function resolve_volley(mod)
     if type(mod) ~= "table" then
         return nil, nil
@@ -3369,6 +3457,73 @@ local function resolve_volley(mod)
     end
     if type(mod.tRa_ASYc_V) == "function" then
         return mod.tRa_ASYc_V, "tRa_ASYc_V"
+    end
+    local fn, key = export_matching(mod, function(v)
+        return is_volley_fn(v)
+    end)
+    if fn then
+        return fn, key
+    end
+    local client = ReplicatedStorage:FindFirstChild("Client")
+    local tools = client and client:FindFirstChild("Tools")
+    local weapon = tools and tools:FindFirstChild("Weapon")
+    local muzzle = weapon and weapon:FindFirstChild("Muzzle")
+    local dInst = muzzle and muzzle:FindFirstChild("Discharge")
+    if not dInst then
+        dInst = find_named_mod(ReplicatedStorage, "Discharge")
+    end
+    if dInst then
+        local ok, d = pcall(require, dInst)
+        if ok and type(d) == "table" and type(d.fire) == "function" then
+            fn, key = key_from_caller(mod, d.fire, is_volley_fn)
+            if not fn then
+                fn, key = key_from_caller(mod, d.fire)
+            end
+            if fn and key ~= "fire" then
+                return fn, key
+            end
+        end
+    end
+    return nil, nil
+end
+
+local function resolve_recoil(mod)
+    if type(mod) ~= "table" then
+        return nil, nil
+    end
+    if type(mod.applyRecoil) == "function" then
+        return mod.applyRecoil, "applyRecoil"
+    end
+    if type(mod.ibjoVLFtNP) == "function" then
+        return mod.ibjoVLFtNP, "ibjoVLFtNP"
+    end
+    local skip = {
+        update = true,
+        attach = true,
+        detach = true,
+        getSpring = true,
+        onMuzzleChanged = true,
+    }
+    local fn, key = export_matching(mod, function(v, k)
+        if skip[k] then
+            return false
+        end
+        return has_str_const(v, "DebugShotsGui") or has_str_const(v, "recoil suppressed")
+    end)
+    if fn then
+        return fn, key
+    end
+    local client = ReplicatedStorage:FindFirstChild("Client")
+    local tools = client and client:FindFirstChild("Tools")
+    local weaponInst = tools and tools:FindFirstChild("Weapon")
+    if weaponInst then
+        local okW, WeaponMod = pcall(require, weaponInst)
+        if okW and type(WeaponMod) == "table" and type(WeaponMod._onMuzzleFired) == "function" then
+            fn, key = key_from_caller(mod, WeaponMod._onMuzzleFired)
+            if fn then
+                return fn, key
+            end
+        end
     end
     return nil, nil
 end
@@ -3381,9 +3536,11 @@ local function load_game_modules()
         hrInst = find_named_mod(ps, "HitReporter")
         if cfInst then
             local ok, mod = pcall(require, cfInst)
-            if ok and resolve_volley(mod) then
+            if ok and type(mod) == "table" then
                 ClientFire = mod
-                break
+                if resolve_volley(mod) then
+                    break
+                end
             end
         end
         task.wait(0.15)
@@ -3417,6 +3574,8 @@ local function install_hooks()
     if not volleyFn then
         if not extraHooksInstalled then
             install_extra_hooks()
+        elseif ensure_recoil then
+            ensure_recoil()
         end
         return false
     end
@@ -3659,6 +3818,35 @@ local function hook_fn(obj, key, wrapperName, wrap)
     end
 end
 
+ensure_recoil = function()
+    if recoilHooked then
+        return
+    end
+    local client = ReplicatedStorage:FindFirstChild("Client")
+    local tools = client and client:FindFirstChild("Tools")
+    local weapon = tools and tools:FindFirstChild("Weapon")
+    local controllers = weapon and weapon:FindFirstChild("controllers")
+    local recInst = controllers and controllers:FindFirstChild("RecoilController")
+    if not recInst then
+        return
+    end
+    local ok, recoil = pcall(require, recInst)
+    if not (ok and type(recoil) == "table") then
+        return
+    end
+    local _, recoilKey = resolve_recoil(recoil)
+    if not recoilKey then
+        return
+    end
+    hook_fn(recoil, recoilKey, "noRecoil", function(orig, ...)
+        if CFG.NoRecoil then
+            return
+        end
+        return orig(...)
+    end)
+    recoilHooked = true
+end
+
 function install_extra_hooks()
     if extraHooksInstalled then
         return
@@ -3748,16 +3936,7 @@ function install_extra_hooks()
             end
             local ok, recoil = pcall(require, controllers:FindFirstChild("RecoilController"))
             if ok and type(recoil) == "table" then
-                local recoilKey = type(recoil.applyRecoil) == "function" and "applyRecoil"
-                    or (type(recoil.ibjoVLFtNP) == "function" and "ibjoVLFtNP")
-                if recoilKey then
-                    hook_fn(recoil, recoilKey, "noRecoil", function(orig, ...)
-                        if CFG.NoRecoil then
-                            return
-                        end
-                        return orig(...)
-                    end)
-                end
+                ensure_recoil()
             end
             local bipodFolder = controllers:FindFirstChild("bipod")
             local bipodMod = bipodFolder and bipodFolder:FindFirstChild("BipodController")
