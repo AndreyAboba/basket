@@ -601,19 +601,61 @@ function F.class_type()
     if type(v) == "string" then
         return v
     end
+    local n = F.cv_val(LP.Character, "ClassName")
+    if type(n) == "string" then
+        return n
+    end
+    return nil
+end
+
+function F.held_named(needle)
+    local char = LP.Character
+    if not char or type(needle) ~= "string" then
+        return nil
+    end
+    needle = string.lower(needle)
+    local kids = char:GetChildren()
+    for i = 1, #kids do
+        local c = kids[i]
+        if c:IsA("Tool") then
+            local n = string.lower(c.Name)
+            if string.find(n, needle, 1, true) then
+                return c
+            end
+            local tt = c:GetAttribute("ToolType")
+            if type(tt) == "string" and string.find(string.lower(tt), needle, 1, true) then
+                return c
+            end
+        end
+    end
     return nil
 end
 
 function F.ensure_support_remotes()
     local rem = ReplicatedStorage:FindFirstChild("Remotes")
-    if not rem then
-        return
+    if rem then
+        if not lastSupport.medicRE then
+            lastSupport.medicRE = rem:FindFirstChild("MedicBag")
+        end
+        if not lastSupport.binRE then
+            lastSupport.binRE = rem:FindFirstChild("Binoculars")
+        end
     end
-    if not lastSupport.medicRE then
-        lastSupport.medicRE = rem:FindFirstChild("MedicBag")
-    end
-    if not lastSupport.binRE then
-        lastSupport.binRE = rem:FindFirstChild("Binoculars")
+    if not lastSupport.medicRE or not lastSupport.binRE then
+        local desc = ReplicatedStorage:GetDescendants()
+        for i = 1, #desc do
+            local d = desc[i]
+            if d:IsA("RemoteEvent") then
+                if not lastSupport.medicRE and d.Name == "MedicBag" then
+                    lastSupport.medicRE = d
+                elseif not lastSupport.binRE and d.Name == "Binoculars" then
+                    lastSupport.binRE = d
+                end
+            end
+            if lastSupport.medicRE and lastSupport.binRE then
+                break
+            end
+        end
     end
     if lastSupport.binRE and not lastSupport.reconHooked then
         lastSupport.reconHooked = true
@@ -642,18 +684,22 @@ function F.tick_support()
     lastSupport.at = now
     F.ensure_support_remotes()
     local hrp = F.hrp_of(LP.Character)
-    if CFG.AutoHeal and lastSupport.medicRE then
-        local ct = F.class_type()
-        if ct == "Medic" and hrp then
+    local ct = F.class_type()
+    local ctLow = type(ct) == "string" and string.lower(ct) or ""
+    if CFG.AutoHeal and lastSupport.medicRE and hrp then
+        local bag = F.held_named("medicbag")
+        local isMedic = bag ~= nil or string.find(ctLow, "medic", 1, true) ~= nil
+        if isMedic then
             local radius = CFG.AutoHealRadius or 7
             local best, bestD
             local list = Players:GetPlayers()
             for i = 1, #list do
                 local pl = list[i]
-                if pl ~= LP and LP.Team and pl.Team and LP.Team == pl.Team and F.alive(pl) then
+                if pl ~= LP and LP.Team and pl.Team and LP.Team == pl.Team then
                     local r = F.char_ref(pl)
                     local th = r.hrp
-                    if th then
+                    local hum = r.hum
+                    if th and hum and hum.Health > 0 then
                         local d = (th.Position - hrp.Position).Magnitude
                         if d <= radius and (not bestD or d < bestD) then
                             best, bestD = r.char, d
@@ -663,8 +709,18 @@ function F.tick_support()
             end
             if best then
                 if lastSupport.heal ~= best then
-                    F.stop_heal()
+                    if lastSupport.heal then
+                        pcall(function()
+                            lastSupport.medicRE:FireServer(lastSupport.heal, false)
+                        end)
+                    end
                     lastSupport.heal = best
+                    lastSupport.healAt = now
+                    pcall(function()
+                        lastSupport.medicRE:FireServer(best, true)
+                    end)
+                elseif now - (lastSupport.healAt or 0) > 1.2 then
+                    lastSupport.healAt = now
                     pcall(function()
                         lastSupport.medicRE:FireServer(best, true)
                     end)
@@ -679,8 +735,9 @@ function F.tick_support()
         F.stop_heal()
     end
     if CFG.AutoRecon and lastSupport.binRE and now >= lastSupport.reconUntil and Cam and hrp then
-        local ct = F.class_type()
-        if ct == "Recon" then
+        local bins = F.held_named("binocular")
+        local isRecon = bins ~= nil or string.find(ctLow, "recon", 1, true) ~= nil
+        if isRecon then
             local best, bestD
             for ri = 1, rosterN do
                 local pl = roster[ri]
@@ -7626,17 +7683,17 @@ function F.buildUI(ctx)
         end,
     })
 
-    local dbg = Misc:Section({ Side = "Left" })
-    dbg:Header({ Name = "Support" })
-    boolToggle(dbg, "Auto Heal", "CW_AutoHeal", function()
+    local healSec = Misc:Section({ Side = "Left" })
+    healSec:Header({ Name = "Auto Heal" })
+    boolToggle(healSec, "Enabled", "CW_AutoHeal", function()
         return CFG.AutoHeal
     end, function(v)
         CFG.AutoHeal = v
         if not v then
             F.stop_heal()
         end
-    end, "Heals the nearest teammate in range when you are a medic.")
-    slider(dbg, {
+    end, "Heals the nearest teammate while the medic bag is out.")
+    slider(healSec, {
         Name = "Heal Radius",
         Flag = "CW_HealRadius",
         Default = CFG.AutoHealRadius,
@@ -7647,11 +7704,16 @@ function F.buildUI(ctx)
             CFG.AutoHealRadius = v
         end,
     })
-    boolToggle(dbg, "Auto Recon", "CW_AutoRecon", function()
+
+    local reconSec = Misc:Section({ Side = "Right" })
+    reconSec:Header({ Name = "Auto Recon" })
+    boolToggle(reconSec, "Enabled", "CW_AutoRecon", function()
         return CFG.AutoRecon
     end, function(v)
         CFG.AutoRecon = v
     end, "Spots the nearest enemy. Respects cooldown.")
+
+    local dbg = Misc:Section({ Side = "Left" })
     dbg:Header({ Name = "Staff Detect" })
     feature(dbg, {
         Title = "Staff Detect",
