@@ -624,21 +624,22 @@ function F.held_named(needle)
     local kids = char:GetChildren()
     for i = 1, #kids do
         local c = kids[i]
-        if c:IsA("Tool") then
-            local n = string.lower(c.Name)
-            if string.find(n, needle, 1, true) then
-                return c
-            end
-            local tt = c:GetAttribute("ToolType")
-            if type(tt) == "string" and string.find(string.lower(tt), needle, 1, true) then
-                return c
-            end
+        local n = string.lower(c.Name)
+        if string.find(n, needle, 1, true) then
+            return c
+        end
+        local tt = c:GetAttribute("ToolType")
+        if type(tt) == "string" and string.find(string.lower(tt), needle, 1, true) then
+            return c
         end
     end
     return nil
 end
 
 function F.ensure_support_remotes()
+    if lastSupport.medicRE and lastSupport.binRE then
+        return
+    end
     local rem = ReplicatedStorage:FindFirstChild("Remotes")
     if rem then
         if not lastSupport.medicRE then
@@ -896,23 +897,33 @@ function F.tick_support()
     else
         F.stop_heal()
     end
-    if CFG.AutoRecon and lastSupport.binRE and Cam and hrp and F.held_named("binocular") and F.bins_zoomed() then
-        local dir, center, count = F.recon_cluster()
-        if dir and center then
-            lastSupport.spotPos = center
-            lastSupport.spotLook = dir
-            lastSupport.spotN = count
+    if CFG.AutoRecon then
+        local cam = Workspace.CurrentCamera
+        if cam then
+            Cam = cam
         end
-        if lastSupport.spotPos and F.recon_cd_ready(now) then
-            F.recon_aim()
-            local look = Cam.CFrame.LookVector
-            local kind = F.recon_is_command() and "Designate" or "Spotting"
-            lastSupport.binRE:FireServer(kind, look)
-            lastSupport.reconUntil = now + 2
+        local bins = F.held_named("binocular")
+        if not bins then
+            bins = F.held_named("m22")
+        end
+        if lastSupport.binRE and Cam and bins then
+            local okC, dir, center = pcall(F.recon_cluster)
+            if okC and dir and center then
+                lastSupport.spotPos = center
+                lastSupport.spotLook = dir
+                F.recon_aim()
+            end
+            if F.recon_cd_ready(now) then
+                local look = Cam.CFrame.LookVector
+                local kind = F.recon_is_command() and "Designate" or "Spotting"
+                lastSupport.binRE:FireServer(kind, look)
+                lastSupport.reconUntil = now + 2
+            end
+        else
+            lastSupport.spotPos = nil
         end
     else
         lastSupport.spotPos = nil
-        lastSupport.scoutAt = nil
     end
 end
 
@@ -7854,7 +7865,7 @@ function F.buildUI(ctx)
         return CFG.AutoRecon
     end, function(v)
         CFG.AutoRecon = v
-    end, "ADS binoculars. Looks at a visible cluster, holds scout, then spots.")
+    end, "Spots while binoculars are equipped. Looks at a visible cluster if there is one.")
 
     local dbg = Misc:Section({ Side = "Left" })
     dbg:Header({ Name = "Staff Detect" })
