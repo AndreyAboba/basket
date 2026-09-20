@@ -98,6 +98,9 @@ local CFG = {
     ForceHitMargin = 2.5,
     AutoHeal = false,
     AutoHealRadius = 7,
+    AutoHealSelf = true,
+    AutoRevive = false,
+    AutoReviveHold = 1.5,
     AutoRecon = false,
 
     MultiPoint = true,
@@ -489,9 +492,12 @@ function F.part_name_for_shot()
         end
         return "Torso"
     end
-    local hc = CFG.HeadChance
+    local hc = tonumber(CFG.HeadChance)
     if type(hc) ~= "number" then
         hc = 50
+    end
+    if hc > 0 and hc <= 1 then
+        hc = hc * 100
     end
     hc = clamp(hc, 0, 100)
     if hc >= 100 then
@@ -512,11 +518,14 @@ function F.force_part_name()
         return "Torso"
     end
     if mode == "auto" then
-        return F.part_name_for_shot()
+        return lastSupport.prefer or F.part_name_for_shot()
     end
-    local hc = CFG.HeadChance
+    local hc = tonumber(CFG.HeadChance)
     if type(hc) ~= "number" then
         hc = 50
+    end
+    if hc > 0 and hc <= 1 then
+        hc = hc * 100
     end
     hc = clamp(hc, 0, 100)
     if hc >= 100 then
@@ -555,6 +564,9 @@ function F.apply_force_hit(impact)
         return
     end
     if not victim then
+        if lastSupport.rolled ~= true then
+            return
+        end
         local from = lastShotFrom
         local pos = impact.Position
         if typeof(pos) ~= "Vector3" and inst then
@@ -585,7 +597,7 @@ function F.apply_force_hit(impact)
     if not victim then
         return
     end
-    local part = F.ref_bone(victim, F.force_part_name())
+    local part = F.ref_bone(victim, lastSupport.prefer or F.force_part_name())
     if part then
         impact.Instance = part
         impact.Position = part.Position
@@ -640,21 +652,8 @@ function F.ensure_support_remotes()
         if not lastSupport.binRE then
             lastSupport.binRE = rem:FindFirstChild("Binoculars")
         end
-    end
-    if not lastSupport.medicRE or not lastSupport.binRE then
-        local desc = ReplicatedStorage:GetDescendants()
-        for i = 1, #desc do
-            local d = desc[i]
-            if d:IsA("RemoteEvent") then
-                if not lastSupport.medicRE and d.Name == "MedicBag" then
-                    lastSupport.medicRE = d
-                elseif not lastSupport.binRE and d.Name == "Binoculars" then
-                    lastSupport.binRE = d
-                end
-            end
-            if lastSupport.medicRE and lastSupport.binRE then
-                break
-            end
+        if not lastSupport.reviveRE then
+            lastSupport.reviveRE = rem:FindFirstChild("BeingRevived")
         end
     end
     if lastSupport.binRE and not lastSupport.reconHooked then
@@ -662,9 +661,44 @@ function F.ensure_support_remotes()
         lastSupport.binRE.OnClientEvent:Connect(function(sec)
             if type(sec) == "number" and sec > 0 then
                 lastSupport.reconUntil = clock() + sec
+            elseif sec == 0 or sec == false or sec == nil then
+                lastSupport.reconUntil = 0
             end
         end)
     end
+end
+
+function F.play_heal_anim()
+    local char = LP.Character
+    local hum = char and char:FindFirstChildWhichIsA("Humanoid")
+    if not hum then
+        return
+    end
+    local animator = hum:FindFirstChildOfClass("Animator") or hum
+    local tr = lastSupport.healTrack
+    if tr and not tr.Parent then
+        lastSupport.healTrack = nil
+        tr = nil
+    end
+    if tr and tr.IsPlaying then
+        return
+    end
+    if not tr then
+        local a = Instance.new("Animation")
+        a.AnimationId = "rbxassetid://73084888693916"
+        local ok, loaded = pcall(function()
+            return animator:LoadAnimation(a)
+        end)
+        a:Destroy()
+        if not ok or not loaded then
+            return
+        end
+        tr = loaded
+        lastSupport.healTrack = tr
+    end
+    pcall(function()
+        tr:Play(0.12)
+    end)
 end
 
 function F.stop_heal()
@@ -674,6 +708,141 @@ function F.stop_heal()
         end)
     end
     lastSupport.heal = nil
+    local tr = lastSupport.healTrack
+    if tr then
+        pcall(function()
+            tr:Stop(0.1)
+        end)
+    end
+end
+
+function F.recon_cd_ready(now)
+    local pg = LP:FindFirstChild("PlayerGui")
+    local gui = pg and pg:FindFirstChild("BinocularsGui")
+    local cd = gui and (gui:FindFirstChild("CooldownText") or gui:FindFirstChild("CooldownText", true))
+    local vis = cd and cd.Visible == true
+    if vis then
+        lastSupport.reconCd = true
+        return false
+    end
+    if lastSupport.reconCd then
+        lastSupport.reconCd = false
+        lastSupport.reconUntil = 0
+        return true
+    end
+    return now >= (lastSupport.reconUntil or 0)
+end
+
+function F.bins_zoomed()
+    local pg = LP:FindFirstChild("PlayerGui")
+    local gui = pg and pg:FindFirstChild("BinocularsGui")
+    if gui and gui.Enabled == true then
+        return true
+    end
+    return Cam and Cam.FieldOfView < 45
+end
+
+function F.recon_cluster()
+    if not Cam then
+        return
+    end
+    F.prep_frame(false)
+    local origin = Cam.CFrame.Position
+    local vs = Cam.ViewportSize
+    local aspect = vs.X / math.max(vs.Y, 1)
+    local halfV = math.rad(Cam.FieldOfView) * 0.5
+    local halfH = math.atan(math.tan(halfV) * aspect)
+    local cone = math.cos(math.min(halfH, halfV) * 0.9)
+    local slots = lastSupport.reconPts
+    if not slots then
+        slots = {}
+        lastSupport.reconPts = slots
+    end
+    local n = 0
+    for ri = 1, rosterN do
+        if n >= 8 then
+            break
+        end
+        local pl = roster[ri]
+        if F.enemy(pl) then
+            local r = F.char_ref(pl)
+            local bone = r.head or r.hrp
+            local char = r.char
+            if bone and char then
+                local pos = bone.Position
+                local sp, on = Cam:WorldToViewportPoint(pos)
+                if on and sp.Z > 0 and F.cached_visible(pl, origin, pos) then
+                    n += 1
+                    local slot = slots[n]
+                    if not slot then
+                        slot = {}
+                        slots[n] = slot
+                    end
+                    slot.pos = pos
+                    slot.dir = (pos - origin).Unit
+                end
+            end
+        end
+    end
+    if n <= 0 then
+        return
+    end
+    local bestI, bestC = 1, 0
+    for i = 1, n do
+        local c = 0
+        local d0 = slots[i].dir
+        for j = 1, n do
+            if d0:Dot(slots[j].dir) >= cone then
+                c += 1
+            end
+        end
+        if c > bestC then
+            bestC = c
+            bestI = i
+        end
+    end
+    local accX, accY, accZ, k = 0, 0, 0, 0
+    local d0 = slots[bestI].dir
+    for j = 1, n do
+        if d0:Dot(slots[j].dir) >= cone then
+            local p = slots[j].pos
+            accX += p.X
+            accY += p.Y
+            accZ += p.Z
+            k += 1
+        end
+    end
+    if k <= 0 then
+        return
+    end
+    local center = Vector3.new(accX / k, accY / k, accZ / k)
+    local dir = center - origin
+    if dir.Magnitude < 0.05 then
+        return
+    end
+    return dir.Unit, center, k
+end
+
+function F.start_heal(target, now)
+    if lastSupport.heal ~= target then
+        if lastSupport.heal then
+            pcall(function()
+                lastSupport.medicRE:FireServer(lastSupport.heal, false)
+            end)
+        end
+        lastSupport.heal = target
+        lastSupport.healAt = now
+        pcall(function()
+            lastSupport.medicRE:FireServer(target, true)
+        end)
+        F.play_heal_anim()
+    elseif now - (lastSupport.healAt or 0) > 1.2 then
+        lastSupport.healAt = now
+        pcall(function()
+            lastSupport.medicRE:FireServer(target, true)
+        end)
+        F.play_heal_anim()
+    end
 end
 
 function F.tick_support()
@@ -684,84 +853,93 @@ function F.tick_support()
     lastSupport.at = now
     F.ensure_support_remotes()
     local hrp = F.hrp_of(LP.Character)
-    local ct = F.class_type()
-    local ctLow = type(ct) == "string" and string.lower(ct) or ""
-    if CFG.AutoHeal and lastSupport.medicRE and hrp then
-        local bag = F.held_named("medicbag")
-        local isMedic = bag ~= nil or string.find(ctLow, "medic", 1, true) ~= nil
-        if isMedic then
-            local radius = CFG.AutoHealRadius or 7
-            local best, bestD
-            local list = Players:GetPlayers()
-            for i = 1, #list do
-                local pl = list[i]
+    if CFG.AutoHeal and lastSupport.medicRE and hrp and F.held_named("medicbag") then
+        local radius = CFG.AutoHealRadius or 7
+        local best
+        local myFrac = F.limb_hp_frac(LP.Character)
+        if CFG.AutoHealSelf ~= false and myFrac < 0.98 then
+            best = LP.Character
+        else
+            local bestD
+            for ri = 1, rosterN do
+                local pl = roster[ri]
                 if pl ~= LP and LP.Team and pl.Team and LP.Team == pl.Team then
                     local r = F.char_ref(pl)
                     local th = r.hrp
-                    local hum = r.hum
-                    if th and hum and hum.Health > 0 then
+                    if th and r.hum and r.hum.Health > 0 then
                         local d = (th.Position - hrp.Position).Magnitude
-                        if d <= radius and (not bestD or d < bestD) then
-                            best, bestD = r.char, d
+                        if d <= radius and F.limb_hp_frac(r.char, r) < 0.98 then
+                            if not bestD or d < bestD then
+                                best, bestD = r.char, d
+                            end
                         end
                     end
                 end
             end
-            if best then
-                if lastSupport.heal ~= best then
-                    if lastSupport.heal then
-                        pcall(function()
-                            lastSupport.medicRE:FireServer(lastSupport.heal, false)
-                        end)
-                    end
-                    lastSupport.heal = best
-                    lastSupport.healAt = now
-                    pcall(function()
-                        lastSupport.medicRE:FireServer(best, true)
-                    end)
-                elseif now - (lastSupport.healAt or 0) > 1.2 then
-                    lastSupport.healAt = now
-                    pcall(function()
-                        lastSupport.medicRE:FireServer(best, true)
-                    end)
-                end
-            else
-                F.stop_heal()
-            end
+        end
+        if best then
+            F.start_heal(best, now)
         else
             F.stop_heal()
         end
     else
         F.stop_heal()
     end
-    if CFG.AutoRecon and lastSupport.binRE and now >= lastSupport.reconUntil and Cam and hrp then
-        local bins = F.held_named("binocular")
-        local isRecon = bins ~= nil or string.find(ctLow, "recon", 1, true) ~= nil
-        if isRecon then
+    if CFG.AutoRevive and lastSupport.reviveRE and hrp then
+        local hold = tonumber(CFG.AutoReviveHold) or 1.5
+        if hold < 0.4 then
+            hold = 0.4
+        end
+        local cur = lastSupport.revive
+        if cur and lastSupport.reviveAt then
+            if now - lastSupport.reviveAt >= hold then
+                pcall(function()
+                    lastSupport.reviveRE:FireServer("complete", cur)
+                end)
+                lastSupport.revive = nil
+                lastSupport.reviveUntil = now + 0.8
+            end
+        elseif now >= (lastSupport.reviveUntil or 0) then
             local best, bestD
             for ri = 1, rosterN do
                 local pl = roster[ri]
-                if F.enemy(pl) then
+                if pl ~= LP and LP.Team and pl.Team and LP.Team == pl.Team then
                     local r = F.char_ref(pl)
-                    local th = r.hrp or r.head
-                    if th then
-                        local d = (th.Position - hrp.Position).Magnitude
-                        if not bestD or d < bestD then
-                            best, bestD = th, d
+                    local u = F.cv_val(r.char, "Unconscious")
+                    if (u == true or u == 1) and r.hrp then
+                        local d = (r.hrp.Position - hrp.Position).Magnitude
+                        if d <= 10 and (not bestD or d < bestD) then
+                            best, bestD = pl, d
                         end
                     end
                 end
             end
             if best then
-                local dir = best.Position - Cam.CFrame.Position
-                if dir.Magnitude > 0.05 then
-                    lastSupport.reconUntil = now + 1.2
-                    pcall(function()
-                        lastSupport.binRE:FireServer("Spotting", dir.Unit)
-                    end)
-                end
+                lastSupport.revive = best
+                lastSupport.reviveAt = now
+                pcall(function()
+                    lastSupport.reviveRE:FireServer("begin", best)
+                end)
             end
         end
+    elseif lastSupport.revive then
+        lastSupport.revive = nil
+    end
+    if CFG.AutoRecon and lastSupport.binRE and Cam and hrp and F.held_named("binocular") and F.bins_zoomed() and F.recon_cd_ready(now) then
+        local dir, center, count = F.recon_cluster()
+        if dir then
+            lastSupport.spotPos = center
+            lastSupport.spotLook = dir
+            lastSupport.spotN = count
+            lastSupport.reconUntil = now + 8
+            pcall(function()
+                lastSupport.binRE:FireServer("Spotting", dir)
+            end)
+        else
+            lastSupport.spotPos = nil
+        end
+    elseif not (CFG.AutoRecon and F.held_named("binocular") and F.bins_zoomed()) then
+        lastSupport.spotPos = nil
     end
 end
 
@@ -1057,9 +1235,12 @@ function F.light_predict(player, bone, origin, nowPos, inVeh)
 end
 
 function F.hit_rolls()
-    local ch = CFG.HitChance
+    local ch = tonumber(CFG.HitChance)
     if type(ch) ~= "number" then
         ch = 70
+    end
+    if ch > 0 and ch <= 1 then
+        ch = ch * 100
     end
     ch = clamp(ch, 0, 100)
     if ch >= 100 then
@@ -3584,6 +3765,18 @@ function F.paint_overlay()
                 reticleLines[i].Visible = false
             end
         end
+    elseif CFG.AutoRecon and lastSupport.spotPos then
+        local tScreen = cam:WorldToViewportPoint(lastSupport.spotPos)
+        if tScreen.Z > 0 then
+            F.draw_reticle(tScreen.X, tScreen.Y, COL.TIER2, now)
+            if useDI then
+                F.paint_world_line(cam.CFrame.Position, lastSupport.spotPos, COL.TIER2, 1.6, 0.4)
+            end
+        elseif not useDI then
+            for i = 1, #reticleLines do
+                reticleLines[i].Visible = false
+            end
+        end
     elseif not useDI then
         for i = 1, #reticleLines do
             reticleLines[i].Visible = false
@@ -3998,6 +4191,12 @@ function F.install_hooks()
             end
         end
         local rolled = F.hit_rolls()
+        lastSupport.rolled = rolled
+        if rolled then
+            lastSupport.prefer = F.part_name_for_shot()
+        else
+            lastSupport.prefer = nil
+        end
         local legit = CFG.LegitAim == true
         if CFG.NoSpread and (not rolled or not legit) and type(dirs) == "table" and #dirs > 0 and typeof(dirs[1]) == "Vector3" then
             local base = dirs[1].Unit
@@ -4012,7 +4211,7 @@ function F.install_hooks()
         local isTurret = type(tool) == "string"
         if rolled and CFG.SilentAim and (not isTurret or CFG.TurretSA) and type(dirs) == "table" and typeof(origin) == "Vector3" then
             F.prep_frame(true)
-            local prefer = F.part_name_for_shot()
+            local prefer = lastSupport.prefer or F.part_name_for_shot()
             local src = F.pick_silent_target(F.shot_origin(origin), CFG.SilentAimMaxDist, F.need_los(), nil, prefer, true)
             if src then
                 saFireTgt.player = src.player
@@ -6175,7 +6374,7 @@ function F.buildUI(ctx)
         Min = 0,
         Max = 100,
         Suffix = "%",
-        Desc = "When Hit Part is Head, chance to go for the head. Otherwise torso.",
+        Desc = "Chance to aim head this shot. Rest go torso. Rolled once per shot.",
         Callback = function(v)
             CFG.HeadChance = v
         end,
@@ -6209,7 +6408,7 @@ function F.buildUI(ctx)
         Min = 0,
         Max = 100,
         Suffix = "%",
-        Desc = "How often silent aim takes the shot.",
+        Desc = "Chance silent aim actually takes the shot. Misses stay honest.",
         Callback = function(v)
             CFG.HitChance = v
         end,
@@ -7692,7 +7891,12 @@ function F.buildUI(ctx)
         if not v then
             F.stop_heal()
         end
-    end, "Heals the nearest teammate while the medic bag is out.")
+    end, "Heals while the medic bag is equipped.")
+    boolToggle(healSec, "Self Heal", "CW_AutoHealSelf", function()
+        return CFG.AutoHealSelf ~= false
+    end, function(v)
+        CFG.AutoHealSelf = v
+    end, "Heal yourself first if any limb is damaged, then teammates.")
     slider(healSec, {
         Name = "Heal Radius",
         Flag = "CW_HealRadius",
@@ -7705,13 +7909,34 @@ function F.buildUI(ctx)
         end,
     })
 
+    local reviveSec = Misc:Section({ Side = "Left" })
+    reviveSec:Header({ Name = "Auto Revive" })
+    boolToggle(reviveSec, "Enabled", "CW_AutoRevive", function()
+        return CFG.AutoRevive
+    end, function(v)
+        CFG.AutoRevive = v
+    end, "Revives the nearest downed teammate.")
+    slider(reviveSec, {
+        Name = "Hold Time",
+        Flag = "CW_AutoReviveHold",
+        Default = CFG.AutoReviveHold,
+        Min = 0.4,
+        Max = 10,
+        Precision = 1,
+        Suffix = "s",
+        Desc = "Vanilla is 3s medic / 10s else. Shorter may fail on the server.",
+        Callback = function(v)
+            CFG.AutoReviveHold = v
+        end,
+    })
+
     local reconSec = Misc:Section({ Side = "Right" })
     reconSec:Header({ Name = "Auto Recon" })
     boolToggle(reconSec, "Enabled", "CW_AutoRecon", function()
         return CFG.AutoRecon
     end, function(v)
         CFG.AutoRecon = v
-    end, "Spots the nearest enemy. Respects cooldown.")
+    end, "ADS binoculars. Spots a visible cluster in the current zoom. Respects cooldown.")
 
     local dbg = Misc:Section({ Side = "Left" })
     dbg:Header({ Name = "Staff Detect" })
