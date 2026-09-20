@@ -728,6 +728,100 @@ function F.recon_cd_ready(now)
     return true
 end
 
+function F.recon_scan_update()
+    if lastSupport.reconUpdate then
+        return
+    end
+    if type(getconnections) ~= "function" then
+        return
+    end
+    local ok, conns = pcall(getconnections, RunService.RenderStepped)
+    if not ok or type(conns) ~= "table" then
+        return
+    end
+    for i = 1, #conns do
+        local c = conns[i]
+        local fn
+        local okF, f1 = pcall(function()
+            return c.Function
+        end)
+        if okF and type(f1) == "function" then
+            fn = f1
+        else
+            local ok2, f2 = pcall(function()
+                return c.ForeignFunction
+            end)
+            if ok2 and type(f2) == "function" then
+                fn = f2
+            end
+        end
+        if type(fn) == "function" then
+            local spot = false
+            for k = 1, 48 do
+                local okC, cst = pcall(debug.getconstant, fn, k)
+                if not okC then
+                    break
+                end
+                if cst == "Spotting" then
+                    spot = true
+                    break
+                end
+            end
+            if spot then
+                lastSupport.reconUpdate = fn
+                for ui = 1, 24 do
+                    local okA, a = pcall(debug.getupvalue, fn, ui)
+                    local okB, b = pcall(debug.getupvalue, fn, ui + 1)
+                    if okA and okB and type(a) == "boolean" and typeof(b) == "Instance" and b.Name == "ActionBar" then
+                        lastSupport.scoutUv = ui
+                        break
+                    end
+                end
+                return
+            end
+        end
+    end
+end
+
+function F.force_scout()
+    local inputs = ReplicatedStorage:FindFirstChild("Inputs")
+    local ctx = inputs and inputs:FindFirstChild("BinocularsContext")
+    if ctx then
+        ctx.Enabled = true
+        local scout = ctx:FindFirstChild("Scout")
+        if scout then
+            local okP, pressed = pcall(function()
+                return scout.Pressed
+            end)
+            if okP and typeof(pressed) == "RBXScriptSignal" then
+                if type(firesignal) == "function" then
+                    firesignal(pressed)
+                    lastSupport.scoutSignal = true
+                elseif type(getconnections) == "function" then
+                    local okC, conns = pcall(getconnections, pressed)
+                    if okC and type(conns) == "table" then
+                        for i = 1, #conns do
+                            local c = conns[i]
+                            if c and c.Fire then
+                                c:Fire()
+                                lastSupport.scoutSignal = true
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if lastSupport.scoutSignal then
+        return true
+    end
+    if type(lastSupport.scoutUv) == "number" and type(lastSupport.reconUpdate) == "function" then
+        debug.setupvalue(lastSupport.reconUpdate, lastSupport.scoutUv, true)
+        return true
+    end
+    return false
+end
+
 function F.bins_zoomed()
     local pg = LP:FindFirstChild("PlayerGui")
     local gui = pg and pg:FindFirstChild("BinocularsGui")
@@ -859,11 +953,39 @@ end
 
 function F.tick_support()
     local now = clock()
+    F.ensure_support_remotes()
+    if CFG.AutoRecon then
+        local cam = Workspace.CurrentCamera
+        if cam then
+            Cam = cam
+        end
+        if not lastSupport.reconUpdate and now >= (lastSupport.reconScan or 0) then
+            lastSupport.reconScan = now + 1
+            F.recon_scan_update()
+        end
+        local driven = F.force_scout()
+        if now - (lastSupport.clusterAt or 0) >= 0.3 then
+            lastSupport.clusterAt = now
+            local dir, center = F.recon_cluster()
+            if dir and center then
+                lastSupport.spotPos = center
+                lastSupport.spotLook = dir
+                F.recon_aim()
+            end
+        elseif lastSupport.spotPos then
+            F.recon_aim()
+        end
+        if not driven and lastSupport.binRE and Cam and F.recon_cd_ready(now) then
+            lastSupport.binRE:FireServer(F.recon_is_command() and "Designate" or "Spotting", Cam.CFrame.LookVector)
+            lastSupport.reconUntil = now + 2
+        end
+    else
+        lastSupport.spotPos = nil
+    end
     if now - lastSupport.at < 0.3 then
         return
     end
     lastSupport.at = now
-    F.ensure_support_remotes()
     local hrp = F.hrp_of(LP.Character)
     if CFG.AutoHeal and lastSupport.medicRE and hrp and F.held_named("medicbag") then
         local radius = CFG.AutoHealRadius or 7
@@ -896,34 +1018,6 @@ function F.tick_support()
         end
     else
         F.stop_heal()
-    end
-    if CFG.AutoRecon then
-        local cam = Workspace.CurrentCamera
-        if cam then
-            Cam = cam
-        end
-        local bins = F.held_named("binocular")
-        if not bins then
-            bins = F.held_named("m22")
-        end
-        if lastSupport.binRE and Cam and bins then
-            local okC, dir, center = pcall(F.recon_cluster)
-            if okC and dir and center then
-                lastSupport.spotPos = center
-                lastSupport.spotLook = dir
-                F.recon_aim()
-            end
-            if F.recon_cd_ready(now) then
-                local look = Cam.CFrame.LookVector
-                local kind = F.recon_is_command() and "Designate" or "Spotting"
-                lastSupport.binRE:FireServer(kind, look)
-                lastSupport.reconUntil = now + 2
-            end
-        else
-            lastSupport.spotPos = nil
-        end
-    else
-        lastSupport.spotPos = nil
     end
 end
 
@@ -5659,7 +5753,7 @@ function F.install_movement()
     end))
 
     F.bind(RunService.Heartbeat:Connect(function(dt)
-        pcall(F.tick_support)
+        F.tick_support()
         local char, hum, hrp = hum_hrp()
         if char and hum and hrp and hum.Health > 0 and not CFG.NoClip and not CFG.Fly and not hum.Sit and not hum.SeatPart then
             if hrp.Massless or hrp.CollisionGroup == "Crew" then
