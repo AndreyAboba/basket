@@ -294,16 +294,31 @@ function F.ac_has(fn, want)
 end
 
 function F.ac_is_marker(fn)
-    if type(fn) ~= "function" or not debug.getupvalue then
+    if type(fn) ~= "function" then
         return false
     end
-    for i = 1, 12 do
-        local ok, _, val = pcall(debug.getupvalue, fn, i)
-        if not ok then
-            break
+    local function hit(val)
+        return type(val) == "table" and val.f == 9 and val.s == 13 and val.b == 17 and val.a == 25
+    end
+    if debug.getupvalues then
+        local ok, ups = pcall(debug.getupvalues, fn)
+        if ok and type(ups) == "table" then
+            for k, val in ups do
+                if hit(val) or hit(k) then
+                    return true
+                end
+            end
         end
-        if type(val) == "table" and val.f == 9 and val.s == 13 and val.b == 17 and val.a == 25 then
-            return true
+    end
+    if debug.getupvalue then
+        for i = 1, 16 do
+            local ok, a, b = pcall(debug.getupvalue, fn, i)
+            if not ok then
+                break
+            end
+            if hit(b) or hit(a) then
+                return true
+            end
         end
     end
     return false
@@ -374,6 +389,102 @@ function F.ac_hook_fn(fn, wrapped)
     return ok
 end
 
+function F.ac_find(constants, upvalues)
+    if type(filtergc) ~= "function" then
+        return nil
+    end
+    local opts = { IgnoreExecutor = true }
+    if constants then
+        opts.Constants = constants
+    end
+    if upvalues then
+        opts.Upvalues = upvalues
+    end
+    local ok, res = pcall(filtergc, "function", opts, true)
+    if ok and type(res) == "function" then
+        return res
+    end
+    return nil
+end
+
+function F.ac_has_up(fn, target)
+    if type(fn) ~= "function" or target == nil then
+        return false
+    end
+    if debug.getupvalues then
+        local ok, ups = pcall(debug.getupvalues, fn)
+        if ok and type(ups) == "table" then
+            for k, val in ups do
+                if val == target or k == target then
+                    return true
+                end
+            end
+        end
+    end
+    if debug.getupvalue then
+        for i = 1, 24 do
+            local ok, a, b = pcall(debug.getupvalue, fn, i)
+            if not ok then
+                break
+            end
+            if a == target or b == target then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+function F.ac_hook_remote()
+    if F.acRemote then
+        return true
+    end
+    if type(hookmetamethod) ~= "function" then
+        return false
+    end
+    local rs = game:GetService("ReplicatedStorage")
+    local rem = rs:FindFirstChild("Remotes")
+    local hint = rem and rem:FindFirstChild("StreamingHint")
+    if not hint then
+        return false
+    end
+    local orig
+    local wrapped = newcclosure(function(self, ...)
+        local method = getnamecallmethod()
+        if method == "FireServer" and self == hint then
+            local code, text = ...
+            if code == "g" then
+                local kept = F.ac_filter_g(text)
+                if not kept then
+                    return
+                end
+                return orig(self, "g", kept)
+            end
+            if code == "f" or code == "s" or code == "b" or code == "a" or code == "c" then
+                return
+            end
+        elseif method == "LoadAnimation" then
+            local anim = ...
+            if typeof(anim) == "Instance" then
+                local id = anim.AnimationId
+                if type(id) == "string" and string.find(id, "110472940702397", 1, true) then
+                    return
+                end
+            end
+        end
+        return orig(self, ...)
+    end, "Namecall")
+    setstackhidden(wrapped, true)
+    local ok, hooked = pcall(hookmetamethod, game, "__namecall", wrapped)
+    if not ok or type(hooked) ~= "function" then
+        return false
+    end
+    orig = hooked
+    extraHooks[#extraHooks + 1] = { kind = "meta", obj = game, method = "__namecall", orig = hooked }
+    F.acRemote = true
+    return true
+end
+
 function F.bypass_ac()
     if F.acDone then
         return
@@ -381,117 +492,136 @@ function F.bypass_ac()
     if not F.acAllow then
         F.acAllow = F.ac_snapshot()
     end
-    local ps = LP:FindFirstChild("PlayerScripts")
-    local pm = ps and ps:FindFirstChild("PlayerModule")
-    if not pm or type(getscriptclosure) ~= "function" then
-        return
+    local namecall = F.ac_hook_remote()
+    local upload = F.ac_find({ "StreamingHint" })
+    if upload and F.ac_has(upload, "MovementPing") then
+        upload = nil
     end
-    local okC, closure = pcall(getscriptclosure, pm)
-    if not okC or type(closure) ~= "function" then
-        warn("[CWCombat] PlayerModule closure missing")
-        return
+    local anim = F.ac_find({ 110472940702397 })
+    if not anim then
+        anim = F.ac_find({ "rbxassetid://%d" })
     end
-    local seen = {}
-    local found = { anim = false, mark = false, upload = false }
-    local function consider(fn)
-        if type(fn) ~= "function" or seen[fn] or fn == closure then
-            return
-        end
-        seen[fn] = true
-        if F.ac_has(fn, "MovementPing") then
-            return
-        end
-        if not found.anim and (F.ac_has(fn, 110472940702397) or F.ac_has(fn, "rbxassetid://%d")) then
-            local wrapped = newcclosure(function()
-            end, "LoadAnimation")
-            if F.ac_hook_fn(fn, wrapped) then
-                found.anim = true
-            end
-        end
-        if not found.mark and F.ac_is_marker(fn) then
-            local wrapped = newcclosure(function()
-            end, "EquipTool")
-            if F.ac_hook_fn(fn, wrapped) then
-                found.mark = true
-            end
-        end
-        if not found.upload and F.ac_has(fn, "StreamingHint") then
-            local orig
-            local wrapped = newcclosure(function(code, text)
-                if code == "g" then
-                    local kept = F.ac_filter_g(text)
-                    if kept then
-                        return orig(code, kept)
-                    end
-                    return
-                end
-                if code == "f" or code == "s" or code == "b" or code == "a" or code == "c" then
-                    return
-                end
-                return orig(code, text)
-            end, "FireServer")
-            setstackhidden(wrapped, true)
-            local okH, hooked = pcall(hookfunction, fn, wrapped)
-            if okH then
-                orig = hooked
-                extraHooks[#extraHooks + 1] = { kind = "fn", target = fn }
-                found.upload = true
-            end
-        end
-    end
-    local function walk(fn)
-        if type(fn) ~= "function" or seen[fn] then
-            return
-        end
-        consider(fn)
-        if type(debug.getprotos) ~= "function" then
-            return
-        end
-        local okP, list = pcall(debug.getprotos, fn)
-        if not okP or type(list) ~= "table" then
-            return
-        end
-        for i, proto in list do
-            if type(proto) == "function" then
-                walk(proto)
-            end
-            if debug.getproto then
-                local okA, active = pcall(debug.getproto, fn, i, true)
-                if okA and type(active) == "table" then
-                    for _, live in active do
-                        consider(live)
-                    end
-                elseif okA and type(active) == "function" then
-                    consider(active)
+    local mark = nil
+    if type(filtergc) == "function" then
+        local okL, list = pcall(filtergc, "function", { IgnoreExecutor = true, Constants = { 300 } }, false)
+        if okL and type(list) == "function" and F.ac_is_marker(list) then
+            mark = list
+        elseif okL and type(list) == "table" then
+            for _, obj in list do
+                if type(obj) == "function" and F.ac_is_marker(obj) then
+                    mark = obj
+                    break
                 end
             end
         end
     end
-    walk(closure)
-    if not (found.anim and found.mark and found.upload) and type(getgc) == "function" then
+    if (not upload or not anim or not mark) and type(getgc) == "function" then
         for _, obj in getgc() do
-            if type(obj) == "function" and not seen[obj] and debug.getinfo then
-                local okI, info = pcall(debug.getinfo, obj)
-                local src = okI and type(info) == "table" and (info.source or info.short_src)
-                if type(src) == "string" and string.find(src, "PlayerModule", 1, true) then
-                    consider(obj)
+            if type(obj) == "function" and not (isexecutorclosure and isexecutorclosure(obj)) then
+                local consts = F.ac_consts(obj)
+                local hint, ping, animHit, cap = false, false, false, not consts
+                if consts then
+                    for _, v in consts do
+                        if v == "StreamingHint" then
+                            hint = true
+                        elseif v == "MovementPing" then
+                            ping = true
+                        elseif v == 110472940702397 or v == "rbxassetid://%d" then
+                            animHit = true
+                        elseif type(v) == "string" and string.find(v, "110472940702397", 1, true) then
+                            animHit = true
+                        elseif v == 300 then
+                            cap = true
+                        end
+                    end
                 end
-            end
-            if found.anim and found.mark and found.upload then
-                break
+                if not upload and hint and not ping then
+                    upload = obj
+                end
+                if not anim and animHit then
+                    anim = obj
+                end
+                if not mark and cap and F.ac_is_marker(obj) then
+                    mark = obj
+                end
+                if upload and anim and mark then
+                    break
+                end
             end
         end
     end
-    if found.anim and found.mark and found.upload then
+    local uploadHooked = false
+    if upload and type(hookfunction) == "function" then
+        local orig
+        local wrapped = newcclosure(function(code, text)
+            if code == "g" then
+                local kept = F.ac_filter_g(text)
+                if not kept then
+                    return
+                end
+                return orig("g", kept)
+            end
+            if code == "f" or code == "s" or code == "b" or code == "a" or code == "c" then
+                return
+            end
+            return orig(code, text)
+        end, "FireServer")
+        setstackhidden(wrapped, true)
+        local okH, hooked = pcall(hookfunction, upload, wrapped)
+        if okH and type(hooked) == "function" then
+            orig = hooked
+            extraHooks[#extraHooks + 1] = { kind = "fn", target = upload }
+            uploadHooked = true
+        end
+    end
+    local animHooked = false
+    if anim then
+        animHooked = F.ac_hook_fn(anim, newcclosure(function()
+        end, "LoadAnimation")) == true
+    end
+    local markHooked = false
+    if mark then
+        markHooked = F.ac_hook_fn(mark, newcclosure(function()
+        end, "EquipTool")) == true
+    end
+    local callerHooked = false
+    if not markHooked and anim and type(getgc) == "function" then
+        for _, obj in getgc() do
+            if type(obj) == "function" and obj ~= anim and obj ~= upload and F.ac_has_up(obj, anim) then
+                if F.ac_hook_fn(obj, newcclosure(function()
+                end, "EquipTool")) then
+                    callerHooked = true
+                end
+            end
+        end
+    end
+    local reports = uploadHooked or namecall
+    local animOk = animHooked or namecall
+    local punish = markHooked or callerHooked
+    if reports and animOk and punish then
         F.acDone = true
         print("AC Bypass enabled")
         print("AC bypass - init")
-    else
-        warn("[CWCombat] ac bypass incomplete")
+        return
     end
+    F.acMiss = string.format("upload=%d anim=%d mark=%d", reports and 1 or 0, animOk and 1 or 0, punish and 1 or 0)
 end
 
 F.bypass_ac()
+if not F.acDone then
+    task.spawn(function()
+        for _ = 1, 40 do
+            if F.acDone then
+                return
+            end
+            task.wait(0.25)
+            F.bypass_ac()
+        end
+        if not F.acDone then
+            warn("[CWCombat] ac bypass incomplete " .. (F.acMiss or ""))
+        end
+    end)
+end
 
 local recoilHooked = false
 local ClientFire = nil
