@@ -399,6 +399,18 @@ local function find_player_module()
     return nil
 end
 
+local holders = {}
+local emptyMark
+
+local function ensure_empty()
+    if emptyMark then
+        return emptyMark
+    end
+    emptyMark = newcclosure(function() end, "EquipTool")
+    setstackhidden(emptyMark, true)
+    return emptyMark
+end
+
 local function is_raw_fs(val)
     if type(val) ~= "function" then
         return false
@@ -409,27 +421,22 @@ local function is_raw_fs(val)
     return rawequal(val, api.rawFire) or rawequal(val, fireOrig)
 end
 
-local function patch_fs_upvalues(fn)
+local function get_uvs(fn)
+    local out = {}
     if type(fn) ~= "function" then
-        return
+        return out
     end
-    ensure_wrap()
     if debug.getupvalues then
         local ok, uvs = pcall(debug.getupvalues, fn)
         if ok and type(uvs) == "table" then
             for i, val in uvs do
-                if is_raw_fs(val) then
-                    if pcall(debug.setupvalue, fn, i, wrapFire) then
-                        api.uv = true
-                        api.fire = true
-                    end
-                end
+                out[#out + 1] = { i = i, v = val }
             end
-            return
+            return out
         end
     end
-    if not debug.getupvalue or not debug.setupvalue then
-        return
+    if not debug.getupvalue then
+        return out
     end
     for i = 1, 16 do
         local ok, a, b = pcall(function()
@@ -441,14 +448,28 @@ local function patch_fs_upvalues(fn)
         local val = a
         if type(b) == "function" then
             val = b
+        elseif a == nil and b == nil then
+            break
         end
-        if is_raw_fs(val) then
-            if pcall(debug.setupvalue, fn, i, wrapFire) then
+        out[#out + 1] = { i = i, v = val }
+    end
+    return out
+end
+
+local function patch_fs_upvalues(fn)
+    if type(fn) ~= "function" then
+        return
+    end
+    ensure_wrap()
+    local uvs = get_uvs(fn)
+    for i = 1, #uvs do
+        local rec = uvs[i]
+        if is_raw_fs(rec.v) then
+            if pcall(debug.setupvalue, fn, rec.i, wrapFire) then
+                holders[fn] = true
                 api.uv = true
                 api.fire = true
             end
-        elseif a == nil and b == nil then
-            break
         end
     end
 end
@@ -481,6 +502,73 @@ local function each_live_proto(fn, visit, depth, seen)
     end
 end
 
+local function is_nudge(fn)
+    local list = consts_of(fn)
+    return has_const(list, "Humanoid") and has_const(list, "Tool")
+end
+
+local function is_settle(fn)
+    if type(fn) ~= "function" then
+        return false
+    end
+    if is_marker(fn) then
+        return true
+    end
+    local uvs = get_uvs(fn)
+    for i = 1, #uvs do
+        local val = uvs[i].v
+        if type(val) == "function" and is_nudge(val) then
+            return true
+        end
+    end
+    return false
+end
+
+local function steal_from(fn)
+    if type(fn) ~= "function" then
+        return
+    end
+    if isexecutorclosure and isexecutorclosure(fn) then
+        return
+    end
+    local uvs = get_uvs(fn)
+    local sibling = false
+    for i = 1, #uvs do
+        local val = uvs[i].v
+        if type(val) == "function" and (holders[val] or is_raw_fs(val)) then
+            sibling = true
+            break
+        end
+    end
+    if not sibling then
+        return
+    end
+    local empty = ensure_empty()
+    for i = 1, #uvs do
+        local rec = uvs[i]
+        local val = rec.v
+        if type(val) == "function"
+            and not holders[val]
+            and not is_raw_fs(val)
+            and not (wrapFire and rawequal(val, wrapFire))
+            and not (isexecutorclosure and isexecutorclosure(val)) then
+            if is_lens(val) then
+                api.lensFn = val
+                if hook_fn(val, newcclosure(function() end, "LoadAnimation")) then
+                    api.anim = true
+                end
+            elseif is_settle(val) then
+                if debug.setupvalue and pcall(debug.setupvalue, fn, rec.i, empty) then
+                    api.mark = true
+                end
+                if hook_fn(val, empty) then
+                    api.mark = true
+                end
+            end
+        end
+    end
+end
+
 local function visit_ac_fn(fn)
     if type(fn) ~= "function" then
         return
@@ -490,38 +578,43 @@ local function visit_ac_fn(fn)
     end
     patch_fs_upvalues(fn)
     if not api.anim and is_lens(fn) then
+        api.lensFn = fn
         api.anim = hook_fn(fn, newcclosure(function() end, "LoadAnimation")) or api.anim
     end
-    if not api.mark and is_marker(fn) then
-        api.mark = hook_fn(fn, newcclosure(function() end, "EquipTool")) or api.mark
+    if not api.mark and is_settle(fn) then
+        api.mark = hook_fn(fn, ensure_empty()) or api.mark
     end
 end
 
-local gcTries = 0
+local stealTries = 0
 local luaTicks = 0
+
+local function scan_fns(list)
+    if type(list) ~= "table" then
+        return
+    end
+    local fns = {}
+    for _, obj in list do
+        if type(obj) == "function" then
+            fns[#fns + 1] = obj
+            visit_ac_fn(obj)
+        end
+    end
+    for i = 1, #fns do
+        steal_from(fns[i])
+    end
+end
 
 local function hook_lua_side()
     luaTicks += 1
     if not api.anim then
         local anim = find_fn({ 110472940702397 })
+        if not anim then
+            anim = find_fn({ "rbxassetid://%d" })
+        end
         if anim then
+            api.lensFn = anim
             api.anim = hook_fn(anim, newcclosure(function() end, "LoadAnimation")) or api.anim
-        end
-    end
-    if not api.mark then
-        local okL, list
-        if type(filtergc) == "function" then
-            okL, list = pcall(filtergc, "function", { IgnoreExecutor = true, Constants = { 300, 9, 13, 17 } }, false)
-        end
-        if okL and type(list) == "function" and is_marker(list) then
-            api.mark = hook_fn(list, newcclosure(function() end, "EquipTool")) or api.mark
-        elseif okL and type(list) == "table" then
-            for _, obj in list do
-                if type(obj) == "function" and is_marker(obj) then
-                    api.mark = hook_fn(obj, newcclosure(function() end, "EquipTool")) or api.mark
-                    break
-                end
-            end
         end
     end
 
@@ -530,23 +623,19 @@ local function hook_lua_side()
         local okC, closure = pcall(getscriptclosure, pm)
         if okC and type(closure) == "function" then
             each_live_proto(closure, visit_ac_fn, 0)
+            each_live_proto(closure, steal_from, 0)
         end
     end
 
-    -- getgc is heavy. At most twice: when PlayerModule exists, or after ~1s if it was deleted.
-    if (not api.anim or not api.mark or not api.uv) and gcTries < 2 and type(getgc) == "function" then
-        if pm or luaTicks >= 4 then
-            gcTries += 1
+    -- Two-pass getgc: first remember FireServer holders, then steal settleFocus
+    -- from siblings (commitOcclusion / Size watchers). Numbers like 300/102
+    -- often never show up in getconstants; Humanoid/Tool on nudgeFocus does.
+    if (not api.mark or not api.uv) and stealTries < 3 and type(getgc) == "function" then
+        if pm or luaTicks >= 3 then
+            stealTries += 1
             local okG, objs = pcall(getgc)
-            if okG and type(objs) == "table" then
-                for _, obj in objs do
-                    if type(obj) == "function" then
-                        visit_ac_fn(obj)
-                        if api.anim and api.mark and api.uv then
-                            break
-                        end
-                    end
-                end
+            if okG then
+                scan_fns(objs)
             end
         end
     end
@@ -597,11 +686,11 @@ if not finish() then
         end
         if not api.done then
             warn(string.format(
-                "[CWCombat] ac bypass incomplete upload=%d fire=%d namecall=%d anim=%d mark=%d uv=%d",
+                "[CWCombat] ac bypass incomplete upload=%d fire=%d namecall=%d lens=%d mark=%d uv=%d",
                 api.fire and 1 or 0,
                 api.fire and 1 or 0,
                 api.namecall and 1 or 0,
-                (api.anim or api.namecall) and 1 or 0,
+                api.anim and 1 or 0,
                 api.mark and 1 or 0,
                 api.uv and 1 or 0
             ))
