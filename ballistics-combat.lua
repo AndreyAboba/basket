@@ -119,8 +119,9 @@ local CFG = {
     GunPredict = true,
     GunPredictMul = 0.3,
     GunPredictVehicleMul = 0.5,
-    InterpLead = 0.02,
-    InterpLeadVehicle = 0.1,
+    InterpLead = 0,
+    InterpLeadVehicle = 0,
+    PredictPing = false,
     PredictMaxLead = 8,
     PredictMaxLeadVehicle = 48,
     PredictIgnoreWeapon = false,
@@ -332,7 +333,7 @@ local saFireTgt = {
 local FOOT_NAMES = { "LeftFoot", "RightFoot", "Left Leg", "Right Leg", "LeftLowerLeg", "RightLowerLeg" }
 local visChars = {}
 local visIgnoreN = 0
-local visF = { myChar = nil, ignoreFolder = nil, cam = nil, tool = nil, builtChar = nil, builtTool = nil, builtFolder = nil, builtCam = nil }
+local visF = { myChar = nil, ignoreFolder = nil, cam = nil, tool = nil, builtChar = nil, builtTool = nil, builtFolder = nil, builtCam = nil, shotParams = nil, shotIgnore = nil, exitParams = nil }
 
 local COL = {
     TIER0 = Color3.fromRGB(120, 255, 120),
@@ -940,15 +941,30 @@ function F.in_vehicle(player)
     return ok
 end
 
-function F.lead_sec(origin, pos, speed, drag, inVeh)
+function F.shot_tof_mul()
+    if CFG.InstantHit then
+        local m = tonumber(CFG.InstantHitMul) or 2.4
+        if m > 1.01 then
+            return 1 / m
+        end
+    end
+    return 1
+end
+
+function F.lead_sec(origin, pos, speed, drag, inVeh, tofMul)
     local t = inVeh and (CFG.InterpLeadVehicle or 0) or (CFG.InterpLead or 0)
-    local ping = F.ping_sec()
-    if type(ping) == "number" then
-        t += ping * 0.5
+    if CFG.PredictPing then
+        local ping = F.ping_sec()
+        if type(ping) == "number" then
+            t += ping * 0.5
+        end
     end
     if not CFG.PredictIgnoreWeapon then
         local dist = (origin and pos) and (pos - origin).Magnitude or 0
-        local mul = inVeh and (CFG.GunPredictVehicleMul or 1) or (CFG.GunPredictMul or 1)
+        local mul = tofMul
+        if type(mul) ~= "number" then
+            mul = inVeh and (CFG.GunPredictVehicleMul or 1) or (CFG.GunPredictMul or 1)
+        end
         t += F.flight_time(dist, speed, drag) * mul
     end
     return t
@@ -1024,15 +1040,15 @@ function F.target_vel(player, bone, inVeh)
     return h.v
 end
 
-function F.predict_aim(player, bone, origin, nowPos, speed, drag, inVeh)
+function F.predict_aim(player, bone, origin, nowPos, speed, drag, inVeh, tofMul)
     if not CFG.GunPredict or typeof(nowPos) ~= "Vector3" then
         return nowPos, nowPos
     end
     local vel = F.target_vel(player, bone, inVeh)
     local cap = inVeh and (CFG.PredictMaxLeadVehicle or 48) or (CFG.PredictMaxLead or 8)
-    local t = F.lead_sec(origin, nowPos, speed, drag, inVeh)
+    local t = F.lead_sec(origin, nowPos, speed, drag, inVeh, tofMul)
     local pred = F.extrap_pos(nowPos, vel, t, cap)
-    t = F.lead_sec(origin, pred, speed, drag, inVeh)
+    t = F.lead_sec(origin, pred, speed, drag, inVeh, tofMul)
     pred = F.extrap_pos(nowPos, vel, t, cap)
     return pred, pred
 end
@@ -1176,7 +1192,79 @@ function F.prep_frame(fromFire)
     end
 end
 
-local visMemo = { frame = 0, char = nil, fx = 0, fy = 0, fz = 0, tx = 0, ty = 0, tz = 0, res = false }
+local visMemo = { frame = 0, char = nil, fx = 0, fy = 0, fz = 0, tx = 0, ty = 0, tz = 0, res = false, pen = 0 }
+
+function F.mat_pen(mat)
+    local t = F.MAT_PEN
+    if not t then
+        t = {
+            [Enum.Material.Air] = 0,
+            [Enum.Material.ForceField] = 50,
+            [Enum.Material.Snow] = 0.1,
+            [Enum.Material.Grass] = 0.1,
+            [Enum.Material.LeafyGrass] = 0.1,
+            [Enum.Material.Carpet] = 0.1,
+            [Enum.Material.Fabric] = 0.1,
+            [Enum.Material.Cardboard] = 0.1,
+            [Enum.Material.Foil] = 0.1,
+            [Enum.Material.Neon] = 0.1,
+            [Enum.Material.Plastic] = 0.2,
+            [Enum.Material.SmoothPlastic] = 0.2,
+            [Enum.Material.Leather] = 0.2,
+            [Enum.Material.Plaster] = 0.25,
+            [Enum.Material.Glass] = 0.3,
+            [Enum.Material.Ice] = 0.3,
+            [Enum.Material.Sand] = 0.3,
+            [Enum.Material.Mud] = 0.3,
+            [Enum.Material.Water] = 0.3,
+            [Enum.Material.Salt] = 0.3,
+            [Enum.Material.Rubber] = 0.4,
+            [Enum.Material.WoodPlanks] = 0.5,
+            [Enum.Material.Wood] = 0.6,
+            [Enum.Material.Glacier] = 0.6,
+            [Enum.Material.Limestone] = 0.7,
+            [Enum.Material.CorrodedMetal] = 0.8,
+            [Enum.Material.Ground] = 0.8,
+            [Enum.Material.Brick] = 0.8,
+            [Enum.Material.Asphalt] = 0.8,
+            [Enum.Material.Sandstone] = 0.8,
+            [Enum.Material.Pebble] = 0.9,
+            [Enum.Material.Metal] = 1,
+            [Enum.Material.Concrete] = 1,
+            [Enum.Material.Cobblestone] = 1,
+            [Enum.Material.Pavement] = 1.1,
+            [Enum.Material.Marble] = 1.2,
+            [Enum.Material.Slate] = 1.2,
+            [Enum.Material.Rock] = 1.3,
+            [Enum.Material.Basalt] = 1.5,
+            [Enum.Material.Granite] = 2,
+            [Enum.Material.DiamondPlate] = 2,
+        }
+        F.MAT_PEN = t
+    end
+    return t[mat] or 1
+end
+
+function F.find_exit(entry, dir, inst, maxDist)
+    if typeof(entry) ~= "Vector3" or typeof(dir) ~= "Vector3" or typeof(inst) ~= "Instance" then
+        return nil, nil
+    end
+    if type(maxDist) ~= "number" or maxDist < 0.25 then
+        maxDist = 0.25
+    end
+    local rp = visF.exitParams
+    if not rp then
+        rp = RaycastParams.new()
+        rp.FilterType = Enum.RaycastFilterType.Include
+        visF.exitParams = rp
+    end
+    rp.FilterDescendantsInstances = { inst }
+    local hit = Workspace:Raycast(entry + dir * maxDist, -dir * maxDist, rp)
+    if not hit then
+        return nil, nil
+    end
+    return hit.Position, (hit.Position - entry).Magnitude
+end
 
 function F.vis_pierce_inst(inst)
     if typeof(inst) ~= "Instance" then
@@ -1196,8 +1284,9 @@ function F.vis_pierce_inst(inst)
     return false
 end
 
-function F.world_visible(fromPos, toPos, char)
-    if visMemo.frame == aliveFrame and visMemo.char == char then
+function F.world_visible(fromPos, toPos, char, budget)
+    local pen = (type(budget) == "number" and budget > 0) and budget or 0
+    if visMemo.frame == aliveFrame and visMemo.char == char and visMemo.pen == pen then
         if visMemo.fx == fromPos.X and visMemo.fy == fromPos.Y and visMemo.fz == fromPos.Z
             and visMemo.tx == toPos.X and visMemo.ty == toPos.Y and visMemo.tz == toPos.Z then
             return visMemo.res
@@ -1206,38 +1295,100 @@ function F.world_visible(fromPos, toPos, char)
     local dir = toPos - fromPos
     local mag = dir.Magnitude
     if mag < 0.05 then
-        visMemo.frame, visMemo.char, visMemo.res = aliveFrame, char, true
+        visMemo.frame, visMemo.char, visMemo.res, visMemo.pen = aliveFrame, char, true, pen
         visMemo.fx, visMemo.fy, visMemo.fz = fromPos.X, fromPos.Y, fromPos.Z
         visMemo.tx, visMemo.ty, visMemo.tz = toPos.X, toPos.Y, toPos.Z
         return true
     end
+    local params = visParams
+    local ign, ignN
+    if pen > 0 then
+        local sp = visF.shotParams
+        if not sp then
+            sp = RaycastParams.new()
+            sp.FilterType = Enum.RaycastFilterType.Exclude
+            sp.IgnoreWater = true
+            visF.shotParams = sp
+        end
+        sp.CollisionGroup = visParams.CollisionGroup
+        ign = visF.shotIgnore
+        if not ign then
+            ign = {}
+            visF.shotIgnore = ign
+        end
+        ignN = visIgnoreN
+        for i = 1, ignN do
+            ign[i] = visIgnore[i]
+        end
+        for i = ignN + 1, #ign do
+            ign[i] = nil
+        end
+        sp.FilterDescendantsInstances = table.clone(ign)
+        params = sp
+    end
     local from = fromPos
     local remain = dir
+    local leftPen = pen
+    local penPower = pen
     local ok = false
-    for _ = 1, 4 do
-        local hit = Workspace:Raycast(from, remain, visParams)
+    local steps = pen > 0 and 8 or 4
+    for _ = 1, steps do
+        local hit = Workspace:Raycast(from, remain, params)
         if not hit then
             ok = true
             break
         end
-        if char ~= nil and hit.Instance:IsDescendantOf(char) then
+        local inst = hit.Instance
+        if char ~= nil and inst:IsDescendantOf(char) then
             ok = true
             break
         end
-        if not F.vis_pierce_inst(hit.Instance) then
+        local unit = remain.Magnitude > 1e-4 and remain.Unit or dir.Unit
+        if F.vis_pierce_inst(inst) then
+            local step = (hit.Position - from).Magnitude + 0.2
+            local left = remain.Magnitude - step
+            if left < 0.05 then
+                ok = true
+                break
+            end
+            from = hit.Position + unit * 0.2
+            remain = unit * left
+        elseif leftPen > 0 then
+            local thresh = inst:GetAttribute("PenThreshold")
+            if type(thresh) == "number" and penPower < thresh then
+                ok = false
+                break
+            end
+            local _, thick = F.find_exit(hit.Position, unit, inst, 16)
+            if type(thick) ~= "number" then
+                ok = false
+                break
+            end
+            local mdl = inst:FindFirstAncestorOfClass("Model")
+            local isChar = mdl ~= nil and mdl:FindFirstChildOfClass("Humanoid") ~= nil
+            local cost = thick * (isChar and 0.3 or F.mat_pen(inst.Material))
+            if cost > leftPen then
+                ok = false
+                break
+            end
+            leftPen -= cost
+            if ign then
+                ignN += 1
+                ign[ignN] = inst
+                params.FilterDescendantsInstances = table.clone(ign)
+            end
+            from = hit.Position + unit * 0.05
+            remain = toPos - from
+            if remain.Magnitude < 0.05 then
+                ok = true
+                break
+            end
+        else
             ok = false
             break
         end
-        local left = remain.Magnitude - (hit.Position - from).Magnitude - 0.2
-        if left < 0.05 then
-            ok = true
-            break
-        end
-        local unit = remain.Unit
-        from = hit.Position + unit * 0.2
-        remain = unit * left
     end
-    visMemo.frame, visMemo.char, visMemo.res = aliveFrame, char, ok
+    visMemo.frame, visMemo.char, visMemo.res, visMemo.pen = aliveFrame, char, ok, pen
     visMemo.fx, visMemo.fy, visMemo.fz = fromPos.X, fromPos.Y, fromPos.Z
     visMemo.tx, visMemo.ty, visMemo.tz = toPos.X, toPos.Y, toPos.Z
     return ok
@@ -1625,8 +1776,12 @@ function F.is_shooting()
     return UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
 end
 
-function F.pick_silent_target(origin, maxDist, needVis, fovDeg, boneName, allowMP)
+function F.pick_silent_target(origin, maxDist, needVis, fovDeg, boneName, allowMP, pen)
     origin = F.shot_origin(origin)
+    if type(pen) ~= "number" then
+        local _, _, p = F.weapon_profile(visF.tool, 1, 1)
+        pen = p
+    end
     local cx, cy = vpX * 0.5, vpY * 0.5
     if cx == 0 and Cam then
         local vp = Cam.ViewportSize
@@ -1698,7 +1853,7 @@ function F.pick_silent_target(origin, maxDist, needVis, fovDeg, boneName, allowM
         local visLimit = math.min(nCand, 4)
         for i = 1, visLimit do
             local c = candPool[i]
-            if F.cached_visible(c.player, origin, c.pos) then
+            if F.world_visible(origin, c.pos, c.char, pen) then
                 cand = c
                 break
             end
@@ -1714,7 +1869,7 @@ function F.pick_silent_target(origin, maxDist, needVis, fovDeg, boneName, allowM
                 for i = 1, visLimit do
                     local c = candPool[i]
                     local alt = F.ref_bone(c.player, altName)
-                    if alt and F.cached_visible(c.player, origin, alt.Position) then
+                    if alt and F.world_visible(origin, alt.Position, c.char, pen) then
                         c.bone = alt
                         c.pos = alt.Position
                         cand = c
@@ -3992,7 +4147,8 @@ function F.install_hooks()
         if rolled and CFG.SilentAim and (not isTurret or CFG.TurretSA) and type(dirs) == "table" and typeof(origin) == "Vector3" then
             F.prep_frame(true)
             local prefer = lastSupport.prefer or F.part_name_for_shot()
-            local src = F.pick_silent_target(F.shot_origin(origin), CFG.SilentAimMaxDist, F.need_los(), nil, prefer, true)
+            local speed0, drag0, pen = F.weapon_profile(tool, muzzleIdx, bulletIdx)
+            local src = F.pick_silent_target(F.shot_origin(origin), CFG.SilentAimMaxDist, F.need_los(), nil, prefer, true, pen)
             if src then
                 saFireTgt.player = src.player
                 saFireTgt.pos = src.pos
@@ -4013,14 +4169,14 @@ function F.install_hooks()
                     if CFG.PredictIgnoreWeapon then
                         speed = CFG.PredictFixedSpeed or 850
                     else
-                        speed, drag = F.weapon_profile(tool, muzzleIdx, bulletIdx)
+                        speed, drag = speed0, drag0
                     end
                     local inVeh = tgt.inVeh
                     if inVeh == nil then
                         inVeh = F.in_vehicle(tgt.player)
                         tgt.inVeh = inVeh
                     end
-                    local pred = F.predict_aim(tgt.player, bone, origin, nowPos, speed, drag, inVeh)
+                    local pred = F.predict_aim(tgt.player, bone, origin, nowPos, speed, drag, inVeh, F.shot_tof_mul())
                     tgt.pos = pred
                     tgt.claimPos = pred
                 end
@@ -4029,7 +4185,7 @@ function F.install_hooks()
                 if CFG.MultiPoint and char and bonePos then
                     local occluded = tgt.tier == 2
                     if not occluded then
-                        occluded = not F.world_visible(origin, bonePos, char)
+                        occluded = not F.world_visible(origin, bonePos, char, pen)
                     end
                     if occluded then
                         local spoofNow = tgt.spoof
@@ -4052,14 +4208,14 @@ function F.install_hooks()
                 local canSilent = CFG.SilentAim
                 if canSilent and CFG.VisibleCheck and not peek then
                     local to = (tgt.bone and tgt.bone.Parent and tgt.bone.Position) or nil
-                    canSilent = char ~= nil and to ~= nil and F.world_visible(origin, to, char)
+                    canSilent = char ~= nil and to ~= nil and F.world_visible(origin, to, char, pen)
                 end
                 if canSilent then
                     local aimHit = tgt.pos or tgt.claimPos or nowPos
                     if not peek then
                         aimHit = F.part_aim_point(bone, aimHit)
                     end
-                    local dir = F.ballistic_dir(fireOrigin, aimHit, tool, muzzleIdx, bulletIdx, legit)
+                    local dir = F.ballistic_dir(fireOrigin, aimHit, tool, muzzleIdx, bulletIdx, true)
                     local spread = legit and (CFG.LegitSpread or 0.35) or 0
                     for i = 1, #dirs do
                         local d = spread > 0 and F.spread_around(dir, spread) or dir
@@ -5273,6 +5429,8 @@ end
 
 function F.install_movement()
     local collideSave = {}
+    local crewParts = {}
+    local crewChar = nil
 
     local function hum_hrp()
         local char = LP.Character
@@ -5498,8 +5656,20 @@ function F.install_movement()
             if hrp.Massless or hrp.CollisionGroup == "Crew" then
                 local team = LP.Team and LP.Team.Name
                 local group = team == "PACT" and "CharPACT" or (team == "NATO" and "CharNATO" or "Default")
-                for _, d in char:GetDescendants() do
-                    if d:IsA("BasePart") then
+                if crewChar ~= char then
+                    table.clear(crewParts)
+                    crewChar = char
+                    local n = 0
+                    for _, d in char:GetDescendants() do
+                        if d:IsA("BasePart") then
+                            n += 1
+                            crewParts[n] = d
+                        end
+                    end
+                end
+                for i = 1, #crewParts do
+                    local d = crewParts[i]
+                    if d.Parent then
                         if d.CollisionGroup == "Crew" then
                             d.CollisionGroup = group
                         end
@@ -5508,12 +5678,11 @@ function F.install_movement()
                         end
                     end
                 end
-                if not hrp.CanCollide then
-                    hrp.CanCollide = true
-                end
                 if hum:GetState() == Enum.HumanoidStateType.Physics then
                     hum:ChangeState(Enum.HumanoidStateType.Running)
                 end
+            else
+                crewChar = nil
             end
         end
         if not (CFG.Fly or CFG.NoClip) then
@@ -6131,7 +6300,7 @@ function F.buildUI(ctx)
         return CFG.VisibleCheck
     end, function(v)
         CFG.VisibleCheck = v
-    end)
+    end, "Only shoot if the bullet can reach them, including cover your gun can pierce")
     boolToggle(sa, "Ignore Teammates", "CW_SA_Team", function()
         return CFG.IgnoreTeammates
     end, function(v)
@@ -6249,7 +6418,12 @@ function F.buildUI(ctx)
         return CFG.GunPredict
     end, function(v)
         CFG.GunPredict = v
-    end)
+    end, "Leads the shot to where the bullet lands, not the replicated player.")
+    boolToggle(sa, "Ping Lead", "CW_PredPing", function()
+        return CFG.PredictPing
+    end, function(v)
+        CFG.PredictPing = v
+    end, "Adds network delay on top of flight time. Off: client impact only.")
     boolToggle(sa, "Ignore Weapon Speed", "CW_PredIgnWep", function()
         return CFG.PredictIgnoreWeapon
     end, function(v)
@@ -6272,6 +6446,7 @@ function F.buildUI(ctx)
         Min = 0,
         Max = 4,
         Precision = 2,
+        Desc = "Overlay only. Shots use bullet flight time.",
         Callback = function(v)
             CFG.GunPredictMul = v
         end,
@@ -6283,6 +6458,7 @@ function F.buildUI(ctx)
         Min = 0,
         Max = 4,
         Precision = 2,
+        Desc = "Overlay only for vehicles.",
         Callback = function(v)
             CFG.GunPredictVehicleMul = v
         end,
@@ -6294,6 +6470,7 @@ function F.buildUI(ctx)
         Min = 0,
         Max = 0.4,
         Precision = 3,
+        Desc = "Extra time besides bullet flight. Keep at 0.",
         Callback = function(v)
             CFG.InterpLead = v
         end,
@@ -6305,6 +6482,7 @@ function F.buildUI(ctx)
         Min = 0,
         Max = 0.4,
         Precision = 3,
+        Desc = "Extra vehicle time besides bullet flight. Keep at 0.",
         Callback = function(v)
             CFG.InterpLeadVehicle = v
         end,

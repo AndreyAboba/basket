@@ -2,6 +2,9 @@
 -- New PlayerModule: raw C FireServer (not namecall), remote names via string.char,
 -- g-scan of PlayerGui+CoreGui, MovementPing cadence (debug.info timing).
 -- Snapshot image ids BEFORE MacLib:Window. Loader must run this chunk first.
+-- AC captures Instance.new("RemoteEvent").FireServer in an upvalue BEFORE any
+-- namecall. hookmetamethod never sees those sends. Marker is settleFocus:
+-- step counts 9/13/17/21/25 + timeout 300. Do not require byte 102.
 
 local cloneref = cloneref or function(x)
     return x
@@ -29,6 +32,7 @@ local api = {
     namecall = false,
     anim = false,
     mark = false,
+    uv = false,
     allow = {},
 }
 if type(genv) == "table" then
@@ -46,7 +50,8 @@ local function hook_fn(fn, wrapped)
     if type(hookfunction) ~= "function" then
         return false
     end
-    return pcall(hookfunction, fn, wrapped) == true
+    local ok = pcall(hookfunction, fn, wrapped)
+    return ok == true
 end
 
 local function consts_of(fn)
@@ -63,7 +68,7 @@ local function consts_of(fn)
         return nil
     end
     local list = {}
-    for i = 1, 48 do
+    for i = 1, 64 do
         local ok, v = pcall(debug.getconstant, fn, i)
         if not ok then
             break
@@ -184,7 +189,14 @@ function api.on_send(fn)
     end
 end
 
+local fireOrig
+local wrapFire
+
 local function on_fire(orig, self, ...)
+    local call = orig or fireOrig
+    if not call then
+        return
+    end
     if is_hint(self) then
         local code, text = ...
         if code == "g" then
@@ -192,19 +204,19 @@ local function on_fire(orig, self, ...)
             if not kept then
                 return
             end
-            return orig(self, "g", kept)
+            return call(self, "g", kept)
         end
         if code == "f" or code == "s" or code == "b" or code == "a" or code == "c" then
             return
         end
-        return orig(self, ...)
+        return call(self, ...)
     end
     if is_ping(self) then
         local payload = ...
         if type(payload) == "string" then
-            return orig(self, sanitize_cadence(payload))
+            return call(self, sanitize_cadence(payload))
         end
-        return orig(self, ...)
+        return call(self, ...)
     end
     for i = 1, #sendFilters do
         local act, a, b, c, d = sendFilters[i](self, ...)
@@ -212,53 +224,77 @@ local function on_fire(orig, self, ...)
             return
         end
         if act == true then
-            return orig(self, a, b, c, d)
+            return call(self, a, b, c, d)
         end
     end
-    return orig(self, ...)
+    return call(self, ...)
 end
 
-local function hook_c_fire()
+local function lua_fire(self, ...)
+    return on_fire(fireOrig, self, ...)
+end
+
+local function ensure_wrap()
+    if wrapFire then
+        return wrapFire
+    end
+    wrapFire = newcclosure(lua_fire, "FireServer")
+    setstackhidden(wrapFire, true)
+    api.wrapFire = wrapFire
+    return wrapFire
+end
+
+local function capture_fs()
+    if type(api.rawFire) == "function" then
+        return api.rawFire
+    end
     local tmp = Instance.new("RemoteEvent")
     local fs = tmp.FireServer
     tmp:Destroy()
+    api.rawFire = fs
+    return fs
+end
+
+local function hook_c_fire()
+    local fs = capture_fs()
     if type(fs) ~= "function" then
         return false
     end
-    if isfunctionhooked and isfunctionhooked(fs) then
-        api.fire = true
+    if fireOrig and api.fire then
         return true
     end
-    local orig
-    local wrapped = newcclosure(function(self, ...)
-        return on_fire(orig, self, ...)
-    end, "FireServer")
-    setstackhidden(wrapped, true)
+    ensure_wrap()
     if oth and type(oth.hook) == "function" then
-        local ok, hooked = pcall(oth.hook, fs, wrapped)
+        local ok, hooked = pcall(oth.hook, fs, lua_fire)
         if ok and type(hooked) == "function" then
-            orig = hooked
+            fireOrig = hooked
+            api.fireOrig = hooked
             api.fire = true
             return true
         end
     end
     if type(hookfunction) == "function" then
-        local ok, hooked = pcall(hookfunction, fs, wrapped)
+        local ok, hooked = pcall(hookfunction, fs, wrapFire)
         if ok and type(hooked) == "function" then
-            orig = hooked
+            fireOrig = hooked
+            api.fireOrig = hooked
             api.fire = true
             return true
         end
         if ok then
-            orig = hooked or fs
+            fireOrig = hooked or fs
+            api.fireOrig = fireOrig
             api.fire = true
             return true
         end
     end
-    return false
+    return api.fire == true
 end
 
 local function hook_namecall()
+    if api.namecall then
+        return true
+    end
     if type(hookmetamethod) ~= "function" then
         return false
     end
@@ -286,14 +322,24 @@ local function hook_namecall()
     return true
 end
 
--- New marker inlines string.byte('f'/'s'/'b'/'c'/'a') + step counts + timeout 300.
--- Old {f=9,s=13,b=17,a=25} table is gone.
+-- settleFocus: 9/13/17/21/25 + timeout 300. lensSteps has the steps without 300.
+-- Byte 102 is decompiler-lowered 'f'; do not require it.
 local function is_marker(fn)
     local list = consts_of(fn)
     if not list then
         return false
     end
-    return has_const(list, 300) and has_const(list, 102) and has_const(list, 9) and has_const(list, 13)
+    return has_const(list, 300)
+        and has_const(list, 9)
+        and has_const(list, 13)
+        and has_const(list, 17)
+        and has_const(list, 21)
+        and has_const(list, 25)
+end
+
+local function is_lens(fn)
+    local list = consts_of(fn)
+    return has_const(list, 110472940702397) or has_const(list, "rbxassetid://%d")
 end
 
 local function find_fn(constants)
@@ -317,40 +363,189 @@ local function find_fn(constants)
     return nil
 end
 
-local function hook_lua_side()
-    local anim = find_fn({ 110472940702397 })
-    if anim then
-        api.anim = hook_fn(anim, newcclosure(function() end, "LoadAnimation")) or api.anim
+local function find_player_module()
+    local function named(inst)
+        return inst and inst.Name == "PlayerModule" and inst:IsA("ModuleScript")
     end
-    local mark = nil
-    if type(filtergc) == "function" then
-        local okL, list = pcall(filtergc, "function", { IgnoreExecutor = true, Constants = { 300, 102 } }, false)
+    if LP then
+        local ps = LP:FindFirstChild("PlayerScripts")
+        if ps then
+            local m = ps:FindFirstChild("PlayerModule")
+            if named(m) then
+                return cloneref(m)
+            end
+        end
+    end
+    if type(getloadedmodules) == "function" then
+        local ok, mods = pcall(getloadedmodules)
+        if ok and type(mods) == "table" then
+            for i = 1, #mods do
+                if named(mods[i]) then
+                    return cloneref(mods[i])
+                end
+            end
+        end
+    end
+    if type(getnilinstances) == "function" then
+        local ok, insts = pcall(getnilinstances)
+        if ok and type(insts) == "table" then
+            for i = 1, #insts do
+                if named(insts[i]) then
+                    return cloneref(insts[i])
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function is_raw_fs(val)
+    if type(val) ~= "function" then
+        return false
+    end
+    if wrapFire and rawequal(val, wrapFire) then
+        return false
+    end
+    return rawequal(val, api.rawFire) or rawequal(val, fireOrig)
+end
+
+local function patch_fs_upvalues(fn)
+    if type(fn) ~= "function" then
+        return
+    end
+    ensure_wrap()
+    if debug.getupvalues then
+        local ok, uvs = pcall(debug.getupvalues, fn)
+        if ok and type(uvs) == "table" then
+            for i, val in uvs do
+                if is_raw_fs(val) then
+                    if pcall(debug.setupvalue, fn, i, wrapFire) then
+                        api.uv = true
+                        api.fire = true
+                    end
+                end
+            end
+            return
+        end
+    end
+    if not debug.getupvalue or not debug.setupvalue then
+        return
+    end
+    for i = 1, 16 do
+        local ok, a, b = pcall(function()
+            return debug.getupvalue(fn, i)
+        end)
+        if not ok then
+            break
+        end
+        local val = a
+        if type(b) == "function" then
+            val = b
+        end
+        if is_raw_fs(val) then
+            if pcall(debug.setupvalue, fn, i, wrapFire) then
+                api.uv = true
+                api.fire = true
+            end
+        elseif a == nil and b == nil then
+            break
+        end
+    end
+end
+
+local function each_live_proto(fn, visit, depth, seen)
+    if type(fn) ~= "function" or depth > 10 then
+        return
+    end
+    seen = seen or {}
+    if seen[fn] then
+        return
+    end
+    seen[fn] = true
+    visit(fn)
+    if type(debug.getproto) ~= "function" then
+        return
+    end
+    for i = 1, 40 do
+        local ok, proto = pcall(debug.getproto, fn, i, true)
+        if not ok then
+            break
+        end
+        if type(proto) == "table" then
+            for j = 1, #proto do
+                each_live_proto(proto[j], visit, depth + 1, seen)
+            end
+        elseif type(proto) == "function" then
+            each_live_proto(proto, visit, depth + 1, seen)
+        end
+    end
+end
+
+local function visit_ac_fn(fn)
+    if type(fn) ~= "function" then
+        return
+    end
+    if isexecutorclosure and isexecutorclosure(fn) then
+        return
+    end
+    patch_fs_upvalues(fn)
+    if not api.anim and is_lens(fn) then
+        api.anim = hook_fn(fn, newcclosure(function() end, "LoadAnimation")) or api.anim
+    end
+    if not api.mark and is_marker(fn) then
+        api.mark = hook_fn(fn, newcclosure(function() end, "EquipTool")) or api.mark
+    end
+end
+
+local gcTries = 0
+local luaTicks = 0
+
+local function hook_lua_side()
+    luaTicks += 1
+    if not api.anim then
+        local anim = find_fn({ 110472940702397 })
+        if anim then
+            api.anim = hook_fn(anim, newcclosure(function() end, "LoadAnimation")) or api.anim
+        end
+    end
+    if not api.mark then
+        local okL, list
+        if type(filtergc) == "function" then
+            okL, list = pcall(filtergc, "function", { IgnoreExecutor = true, Constants = { 300, 9, 13, 17 } }, false)
+        end
         if okL and type(list) == "function" and is_marker(list) then
-            mark = list
+            api.mark = hook_fn(list, newcclosure(function() end, "EquipTool")) or api.mark
         elseif okL and type(list) == "table" then
             for _, obj in list do
                 if type(obj) == "function" and is_marker(obj) then
-                    mark = obj
+                    api.mark = hook_fn(obj, newcclosure(function() end, "EquipTool")) or api.mark
                     break
                 end
             end
         end
     end
-    if mark then
-        api.mark = hook_fn(mark, newcclosure(function() end, "EquipTool")) or api.mark
+
+    local pm = find_player_module()
+    if pm and type(getscriptclosure) == "function" then
+        local okC, closure = pcall(getscriptclosure, pm)
+        if okC and type(closure) == "function" then
+            each_live_proto(closure, visit_ac_fn, 0)
+        end
     end
-    if (not api.anim or not api.mark) and type(getgc) == "function" then
-        for _, obj in getgc() do
-            if type(obj) == "function" and not (isexecutorclosure and isexecutorclosure(obj)) then
-                local list = consts_of(obj)
-                if not api.anim and (has_const(list, 110472940702397) or has_const(list, "rbxassetid://%d")) then
-                    api.anim = hook_fn(obj, newcclosure(function() end, "LoadAnimation")) or api.anim
-                end
-                if not api.mark and is_marker(obj) then
-                    api.mark = hook_fn(obj, newcclosure(function() end, "EquipTool")) or api.mark
-                end
-                if api.anim and api.mark then
-                    break
+
+    -- getgc is heavy. At most twice: when PlayerModule exists, or after ~1s if it was deleted.
+    if (not api.anim or not api.mark or not api.uv) and gcTries < 2 and type(getgc) == "function" then
+        if pm or luaTicks >= 4 then
+            gcTries += 1
+            local okG, objs = pcall(getgc)
+            if okG and type(objs) == "table" then
+                for _, obj in objs do
+                    if type(obj) == "function" then
+                        visit_ac_fn(obj)
+                        if api.anim and api.mark and api.uv then
+                            break
+                        end
+                    end
                 end
             end
         end
@@ -358,15 +553,15 @@ local function hook_lua_side()
 end
 
 local function finish()
-    local reports = api.fire or api.namecall
-    local animOk = api.namecall or api.anim
-    local punish = api.mark
-    if reports and animOk and not api.announced then
+    -- namecall is NOT the AC upload path. C FireServer + upvalue patch is.
+    local reports = api.fire
+    local animOk = api.anim or api.namecall
+    if reports and animOk and api.mark and not api.announced then
         api.announced = true
         print("AC Bypass enabled")
         print("AC bypass - init")
     end
-    if reports and animOk and punish then
+    if reports and animOk and api.mark then
         api.done = true
         return true
     end
@@ -384,7 +579,7 @@ hook_namecall()
 hook_lua_side()
 if not finish() then
     task.spawn(function()
-        for _ = 1, 40 do
+        for _ = 1, 60 do
             if api.done then
                 return
             end
@@ -402,10 +597,13 @@ if not finish() then
         end
         if not api.done then
             warn(string.format(
-                "[CWCombat] ac bypass incomplete upload=%d anim=%d mark=%d",
-                (api.fire or api.namecall) and 1 or 0,
-                (api.namecall or api.anim) and 1 or 0,
-                api.mark and 1 or 0
+                "[CWCombat] ac bypass incomplete upload=%d fire=%d namecall=%d anim=%d mark=%d uv=%d",
+                api.fire and 1 or 0,
+                api.fire and 1 or 0,
+                api.namecall and 1 or 0,
+                (api.anim or api.namecall) and 1 or 0,
+                api.mark and 1 or 0,
+                api.uv and 1 or 0
             ))
         end
     end)
