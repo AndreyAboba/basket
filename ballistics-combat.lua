@@ -256,373 +256,6 @@ local origSendClaim = nil
 local extraHooksInstalled = false
 local extraHooks = {}
 
-function F.ac_consts(fn)
-    if type(fn) ~= "function" then
-        return nil
-    end
-    if debug.getconstants then
-        local ok, list = pcall(debug.getconstants, fn)
-        if ok and type(list) == "table" then
-            return list
-        end
-    end
-    if not debug.getconstant then
-        return nil
-    end
-    local list = {}
-    for i = 1, 64 do
-        local ok, v = pcall(debug.getconstant, fn, i)
-        if not ok then
-            break
-        end
-        list[i] = v
-    end
-    return list
-end
-
-function F.ac_has(fn, want)
-    local list = F.ac_consts(fn)
-    if not list then
-        return false
-    end
-    for _, v in list do
-        if v == want then
-            return true
-        end
-    end
-    return false
-end
-
-function F.ac_is_marker(fn)
-    if type(fn) ~= "function" then
-        return false
-    end
-    local function hit(val)
-        return type(val) == "table" and val.f == 9 and val.s == 13 and val.b == 17 and val.a == 25
-    end
-    if debug.getupvalues then
-        local ok, ups = pcall(debug.getupvalues, fn)
-        if ok and type(ups) == "table" then
-            for k, val in ups do
-                if hit(val) or hit(k) then
-                    return true
-                end
-            end
-        end
-    end
-    if debug.getupvalue then
-        for i = 1, 16 do
-            local ok, a, b = pcall(debug.getupvalue, fn, i)
-            if not ok then
-                break
-            end
-            if hit(b) or hit(a) then
-                return true
-            end
-        end
-    end
-    return false
-end
-
-function F.ac_snapshot()
-    local allow = {}
-    local function pull(root)
-        if not root then
-            return
-        end
-        local desc = root:GetDescendants()
-        for i = 1, #desc do
-            local d = desc[i]
-            local img
-            if d:IsA("ImageLabel") or d:IsA("ImageButton") then
-                img = d.Image
-            elseif d:IsA("Decal") then
-                img = d.Texture
-            end
-            if type(img) == "string" then
-                local id = string.match(img, "%d+")
-                if id then
-                    allow[id] = true
-                end
-            end
-        end
-    end
-    pull(LP:FindFirstChild("PlayerGui"))
-    pcall(pull, game:GetService("CoreGui"))
-    return allow
-end
-
-function F.ac_filter_g(text)
-    if type(text) ~= "string" or text == "" then
-        return nil
-    end
-    local allow = F.acAllow
-    if type(allow) ~= "table" then
-        return text
-    end
-    local n = 0
-    local out = {}
-    for id in string.gmatch(text, "%d+") do
-        if allow[id] then
-            n += 1
-            out[n] = id
-        end
-    end
-    if n == 0 then
-        return nil
-    end
-    return table.concat(out, ",")
-end
-
-function F.ac_hook_fn(fn, wrapped)
-    if type(fn) ~= "function" or type(hookfunction) ~= "function" then
-        return false
-    end
-    if isfunctionhooked and isfunctionhooked(fn) then
-        return true
-    end
-    setstackhidden(wrapped, true)
-    local ok = pcall(hookfunction, fn, wrapped)
-    if ok then
-        extraHooks[#extraHooks + 1] = { kind = "fn", target = fn }
-    end
-    return ok
-end
-
-function F.ac_find(constants, upvalues)
-    if type(filtergc) ~= "function" then
-        return nil
-    end
-    local opts = { IgnoreExecutor = true }
-    if constants then
-        opts.Constants = constants
-    end
-    if upvalues then
-        opts.Upvalues = upvalues
-    end
-    local ok, res = pcall(filtergc, "function", opts, true)
-    if ok and type(res) == "function" then
-        return res
-    end
-    return nil
-end
-
-function F.ac_has_up(fn, target)
-    if type(fn) ~= "function" or target == nil then
-        return false
-    end
-    if debug.getupvalues then
-        local ok, ups = pcall(debug.getupvalues, fn)
-        if ok and type(ups) == "table" then
-            for k, val in ups do
-                if val == target or k == target then
-                    return true
-                end
-            end
-        end
-    end
-    if debug.getupvalue then
-        for i = 1, 24 do
-            local ok, a, b = pcall(debug.getupvalue, fn, i)
-            if not ok then
-                break
-            end
-            if a == target or b == target then
-                return true
-            end
-        end
-    end
-    return false
-end
-
-function F.ac_hook_remote()
-    if F.acRemote then
-        return true
-    end
-    if type(hookmetamethod) ~= "function" then
-        return false
-    end
-    local rs = game:GetService("ReplicatedStorage")
-    local rem = rs:FindFirstChild("Remotes")
-    local hint = rem and rem:FindFirstChild("StreamingHint")
-    if not hint then
-        return false
-    end
-    local orig
-    local wrapped = newcclosure(function(self, ...)
-        local method = getnamecallmethod()
-        if method == "FireServer" and self == hint then
-            local code, text = ...
-            if code == "g" then
-                local kept = F.ac_filter_g(text)
-                if not kept then
-                    return
-                end
-                return orig(self, "g", kept)
-            end
-            if code == "f" or code == "s" or code == "b" or code == "a" or code == "c" then
-                return
-            end
-        elseif method == "LoadAnimation" then
-            local anim = ...
-            if typeof(anim) == "Instance" then
-                local id = anim.AnimationId
-                if type(id) == "string" and string.find(id, "110472940702397", 1, true) then
-                    return
-                end
-            end
-        end
-        return orig(self, ...)
-    end, "Namecall")
-    setstackhidden(wrapped, true)
-    local ok, hooked = pcall(hookmetamethod, game, "__namecall", wrapped)
-    if not ok or type(hooked) ~= "function" then
-        return false
-    end
-    orig = hooked
-    extraHooks[#extraHooks + 1] = { kind = "meta", obj = game, method = "__namecall", orig = hooked }
-    F.acRemote = true
-    return true
-end
-
-function F.bypass_ac()
-    if F.acDone then
-        return
-    end
-    if not F.acAllow then
-        F.acAllow = F.ac_snapshot()
-    end
-    local namecall = F.ac_hook_remote()
-    local upload = F.ac_find({ "StreamingHint" })
-    if upload and F.ac_has(upload, "MovementPing") then
-        upload = nil
-    end
-    local anim = F.ac_find({ 110472940702397 })
-    if not anim then
-        anim = F.ac_find({ "rbxassetid://%d" })
-    end
-    local mark = nil
-    if type(filtergc) == "function" then
-        local okL, list = pcall(filtergc, "function", { IgnoreExecutor = true, Constants = { 300 } }, false)
-        if okL and type(list) == "function" and F.ac_is_marker(list) then
-            mark = list
-        elseif okL and type(list) == "table" then
-            for _, obj in list do
-                if type(obj) == "function" and F.ac_is_marker(obj) then
-                    mark = obj
-                    break
-                end
-            end
-        end
-    end
-    if (not upload or not anim or not mark) and type(getgc) == "function" then
-        for _, obj in getgc() do
-            if type(obj) == "function" and not (isexecutorclosure and isexecutorclosure(obj)) then
-                local consts = F.ac_consts(obj)
-                local hint, ping, animHit, cap = false, false, false, not consts
-                if consts then
-                    for _, v in consts do
-                        if v == "StreamingHint" then
-                            hint = true
-                        elseif v == "MovementPing" then
-                            ping = true
-                        elseif v == 110472940702397 or v == "rbxassetid://%d" then
-                            animHit = true
-                        elseif type(v) == "string" and string.find(v, "110472940702397", 1, true) then
-                            animHit = true
-                        elseif v == 300 then
-                            cap = true
-                        end
-                    end
-                end
-                if not upload and hint and not ping then
-                    upload = obj
-                end
-                if not anim and animHit then
-                    anim = obj
-                end
-                if not mark and cap and F.ac_is_marker(obj) then
-                    mark = obj
-                end
-                if upload and anim and mark then
-                    break
-                end
-            end
-        end
-    end
-    local uploadHooked = false
-    if upload and type(hookfunction) == "function" then
-        local orig
-        local wrapped = newcclosure(function(code, text)
-            if code == "g" then
-                local kept = F.ac_filter_g(text)
-                if not kept then
-                    return
-                end
-                return orig("g", kept)
-            end
-            if code == "f" or code == "s" or code == "b" or code == "a" or code == "c" then
-                return
-            end
-            return orig(code, text)
-        end, "FireServer")
-        setstackhidden(wrapped, true)
-        local okH, hooked = pcall(hookfunction, upload, wrapped)
-        if okH and type(hooked) == "function" then
-            orig = hooked
-            extraHooks[#extraHooks + 1] = { kind = "fn", target = upload }
-            uploadHooked = true
-        end
-    end
-    local animHooked = false
-    if anim then
-        animHooked = F.ac_hook_fn(anim, newcclosure(function()
-        end, "LoadAnimation")) == true
-    end
-    local markHooked = false
-    if mark then
-        markHooked = F.ac_hook_fn(mark, newcclosure(function()
-        end, "EquipTool")) == true
-    end
-    local callerHooked = false
-    if not markHooked and anim and type(getgc) == "function" then
-        for _, obj in getgc() do
-            if type(obj) == "function" and obj ~= anim and obj ~= upload and F.ac_has_up(obj, anim) then
-                if F.ac_hook_fn(obj, newcclosure(function()
-                end, "EquipTool")) then
-                    callerHooked = true
-                end
-            end
-        end
-    end
-    local reports = uploadHooked or namecall
-    local animOk = animHooked or namecall
-    local punish = markHooked or callerHooked
-    if reports and animOk and punish then
-        F.acDone = true
-        print("AC Bypass enabled")
-        print("AC bypass - init")
-        return
-    end
-    F.acMiss = string.format("upload=%d anim=%d mark=%d", reports and 1 or 0, animOk and 1 or 0, punish and 1 or 0)
-end
-
-F.bypass_ac()
-if not F.acDone then
-    task.spawn(function()
-        for _ = 1, 40 do
-            if F.acDone then
-                return
-            end
-            task.wait(0.25)
-            F.bypass_ac()
-        end
-        if not F.acDone then
-            warn("[CWCombat] ac bypass incomplete " .. (F.acMiss or ""))
-        end
-    end)
-end
-
 local recoilHooked = false
 local ClientFire = nil
 local HitReporter = nil
@@ -1081,6 +714,12 @@ function F.start_heal(target, now)
 end
 
 function F.tick_support()
+    if not CFG.AutoHeal then
+        if lastSupport.heal then
+            F.stop_heal()
+        end
+        return
+    end
     local now = clock()
     F.ensure_support_remotes()
     if now - lastSupport.at < 0.3 then
@@ -1959,19 +1598,17 @@ function F.fov_px(deg)
     end
     deg = deg or CFG.SilentAimFOV
     local fov = Cam.FieldOfView
+    if vpX == fovCache.vx and vpY == fovCache.vy and fov == fovCache.fov and deg == fovCache.sa then
+        return fovCache.r
+    end
     local dist = vpY * 0.5 / math.tan(math.rad(fov) * 0.5)
-    return dist * math.tan(math.rad(deg) * 0.5)
+    local r = dist * math.tan(math.rad(deg) * 0.5)
+    fovCache.r, fovCache.vx, fovCache.vy, fovCache.fov, fovCache.sa = r, vpX, vpY, fov, deg
+    return r
 end
 
 function F.screen_fov_radius()
-    local fov = Cam.FieldOfView
-    local sa = CFG.SilentAimFOV
-    if vpX == fovCache.vx and vpY == fovCache.vy and fov == fovCache.fov and sa == fovCache.sa then
-        return fovCache.r
-    end
-    fovCache.r = F.fov_px(sa)
-    fovCache.vx, fovCache.vy, fovCache.fov, fovCache.sa = vpX, vpY, fov, sa
-    return fovCache.r
+    return F.fov_px(CFG.SilentAimFOV)
 end
 
 function F.is_aiming()
@@ -5733,11 +5370,10 @@ function F.install_movement()
         end
         return false
     end
-    if ff and ff:IsA("RemoteEvent") and hookfunction then
-        local orig
-        local proxy = newcclosure(function(self, yVel, height, ...)
+    if ff and ff:IsA("RemoteEvent") then
+        local function ff_filter(self, yVel, height, ...)
             if not is_freefall_remote(self) then
-                return orig(self, yVel, height, ...)
+                return
             end
             if CFG.Fly then
                 if type(yVel) ~= "number" then
@@ -5750,17 +5386,32 @@ function F.install_movement()
                 else
                     height = math.clamp(height, 0, 12)
                 end
-                return orig(self, yVel, height, ...)
+                return true, yVel, height
             end
             if CFG.NoFall then
-                return
+                return false
             end
-            return orig(self, yVel, height, ...)
-        end, "suppressFreefall")
-        local okH, hooked = pcall(hookfunction, ff.FireServer, proxy)
-        if okH then
-            orig = hooked
-            extraHooks[#extraHooks + 1] = { kind = "fn", target = ff.FireServer }
+        end
+        local ac = type(getgenv) == "function" and getgenv().CWAcBypass
+        if type(ac) == "table" and type(ac.on_send) == "function" then
+            ac.on_send(ff_filter)
+        elseif hookfunction then
+            local orig
+            local proxy = newcclosure(function(self, yVel, height, ...)
+                local act, a, b = ff_filter(self, yVel, height, ...)
+                if act == false then
+                    return
+                end
+                if act == true then
+                    return orig(self, a, b, ...)
+                end
+                return orig(self, yVel, height, ...)
+            end, "suppressFreefall")
+            local okH, hooked = pcall(hookfunction, ff.FireServer, proxy)
+            if okH then
+                orig = hooked
+                extraHooks[#extraHooks + 1] = { kind = "fn", target = ff.FireServer }
+            end
         end
     end
 
@@ -6252,7 +5903,6 @@ if not F.install_hooks() then
     task.spawn(function()
         for _ = 1, 25 do
             task.wait(0.4)
-            F.bypass_ac()
             pcall(F.load_game_modules)
             if F.install_hooks() then
                 return
