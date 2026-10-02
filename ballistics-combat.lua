@@ -3958,6 +3958,9 @@ function F.resolve_volley(mod)
     if type(mod.tRa_ASYc_V) == "function" then
         return mod.tRa_ASYc_V, "tRa_ASYc_V"
     end
+    if type(mod.sLnpiWe6Dt) == "function" then
+        return mod.sLnpiWe6Dt, "sLnpiWe6Dt"
+    end
     local fn, key = F.export_matching(mod, function(v)
         return F.is_volley_fn(v)
     end)
@@ -3996,6 +3999,9 @@ function F.resolve_recoil(mod)
     end
     if type(mod.ibjoVLFtNP) == "function" then
         return mod.ibjoVLFtNP, "ibjoVLFtNP"
+    end
+    if type(mod.rNDvKCHx7N) == "function" then
+        return mod.rNDvKCHx7N, "rNDvKCHx7N"
     end
     local skip = {
         update = true,

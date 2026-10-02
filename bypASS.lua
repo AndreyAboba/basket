@@ -136,9 +136,16 @@ local function filter_g(text)
     return table.concat(out, ",")
 end
 
--- MovementPing payload: samples,spikes,maxStreak,p50,p90,max,clipTicks
--- ratio > 22.5 is their debug.info hook fingerprint. Do not drop the ping.
+-- MovementPing: old payload was CSV cadence (debug.info ratio>22.5).
+-- Newest build sends tostring(clipTicks) only. Pass that through.
+-- Do not drop the ping.
 local function sanitize_cadence(s)
+    if type(s) ~= "string" then
+        return s
+    end
+    if string.match(s, "^%d+$") then
+        return s
+    end
     local a, b, c, d, e, f, g = string.match(s, "^(%d+),(%d+),(%d+),([%d%.]+),([%d%.]+),([%d%.]+),(%d+)$")
     if not a then
         return s
@@ -551,13 +558,16 @@ local function steal_from(fn)
             and not holders[val]
             and not is_raw_fs(val)
             and not (wrapFire and rawequal(val, wrapFire))
+            and not (iscclosure and iscclosure(val))
             and not (isexecutorclosure and isexecutorclosure(val)) then
             if is_lens(val) then
                 api.lensFn = val
                 if hook_fn(val, newcclosure(function() end, "LoadAnimation")) then
                     api.anim = true
                 end
-            elseif is_settle(val) then
+            else
+                -- commitOcclusion / watchers: Lua siblings of syncOcclusion are
+                -- applyLens + settleFocus. Do not wait for Humanoid/Tool consts.
                 if debug.setupvalue and pcall(debug.setupvalue, fn, rec.i, empty) then
                     api.mark = true
                 end
